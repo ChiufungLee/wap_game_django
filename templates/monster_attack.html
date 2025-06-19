@@ -1,0 +1,29 @@
+{% extends 'base.html' %}
+{% block title %} 进入游戏 {% endblock %}
+{% load static %}
+
+{% block content %}
+
+<img src="{% static 'images/pets/赤焰马.png' %}" alt="runoob-logo" width="240px" height="200px">
+
+<div id="content"></div>
+{% if op_action == 'attack_monster' %}
+
+<p><a href="">攻击</a> <a href="">查看</a> <a href="">逃跑(50铜币)</a></p>
+<p>你生命：560/1000</p>
+<p>病鸡生命：100/100</p>
+<p>你状态：中毒</p>
+<p>对方状态：虚弱</p>
+
+
+{% else %}
+{% endif %}
+
+
+</div>
+
+<a href="#" onclick="goBack()">返回上页</a><br>
+<a href="/wap/?cmd={{ wap_encrypted_param }}">返回游戏</a>
+
+
+{% endblock %}

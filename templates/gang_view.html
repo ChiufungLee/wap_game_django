@@ -1,0 +1,55 @@
+{% extends 'base.html' %}
+
+{% block title %}宗门信息{% endblock %}
+
+{% block css %}
+
+{% endblock %}
+
+{% block content %}
+    <div class="chat-container">
+        {% if messages %}
+        <ul class="messages">
+            {% for message in messages %}
+            <li class="{{ message.tags }}">{{ message }}</li>
+            {% endfor %}
+        </ul>
+        {% endif %}
+
+        <div>
+            <p>帮会排名</p>
+        </div>
+        <div class="chat-tabs">
+            <a href="">等级</a> | <a href="">资金</a> | <a href="">帮派</a> | <a href="">队伍</a> | <a href="">系统</a>
+        </div>
+        
+        <!-- 私聊接收者输入框 -->
+        <div class="private-receiver" id="private-receiver" style="display:none;">
+            <input type="text" id="receiver-input" placeholder="输入对方玩家ID">
+            <button onclick="setPrivateReceiver()">确定</button>
+        </div>
+        
+        <div class="messages-container" id="messages-container">
+            <!-- 消息将通过JavaScript动态添加 -->
+        {% for chat in chat_list %}
+            <div class="chat-message">
+  
+                <p>{{ chat|safe }}</p>
+                <!-- <span class="timestamp">{{ chat.created_at|date:"H:i" }}</span> -->
+            </div>
+        {% endfor %}
+
+        </div>
+        
+        <div class="input-area">
+            <form action="/wap/?cmd={{create_param}}" method="post">
+            {% csrf_token %}
+            <input type="textarea" name="message_input" placeholder="输入聊天内容..." maxlength="256">
+            <input type="text" name="chatt_input" placeholder="输入聊天内容..." value="{{chat_type_id}}" maxlength="256" hidden>
+            <!-- <textarea name="ltmsg" maxlength="200" rows="2" cols="30" placeholder="输入聊天内容..." style="height: auto;"></textarea> -->
+            <p><input type="submit" value="发送" /></p>
+            </form>
+        </div>
+    </div>
+    <a href="/wap/?cmd={{wap_encrypted_param}}">返回游戏</a>
+{% endblock %}

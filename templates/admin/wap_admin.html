@@ -1,0 +1,161 @@
+{% extends 'base.html' %}
+
+{% block title %}设计大厅{% endblock %}
+{% block content %}
+{% if messages %}{{messages}}<br/>{% else %}{% endif %}
+{{neyong | safe}}
+{{u.is_designer}}<br/>
+<!--
+[设计大厅]<br/>
+---<br/>
+<a href="/wap_attribute_basic/" class="function_button">基本属性</a><br/>
+<a href="/wap_attribute/" class="function_button">定义属性</a><br/>
+<a href="/wap_event/" class="function_button">公共事件</a><br/>
+<a href="/wap_type/" class="function_button">装备类型</a><br/>
+<a href="/wap_area_name/?object_name=map" class="function_button">设计地图</a><br/>
+<a href="/wap_area_name_list/?object_name=chongwu" class="function_button">设计宠物</a><br/>
+<a href="/wap_area_name/?object_name=item" class="function_button">设计物品</a><br/>
+<a href="/wap_area_name_list/?object_name=skill" class="function_button">设计技能</a><br/>
+<a href="/wap_task/?object_name=task" class="function_button">设计任务</a><br/>
+<a href="/wap_expression/?object_name=expression" class="function_button">定义表达式</a><br/>
+<a href="/wap_area_name/?object_name=npc" class="function_button">设计电脑人物</a><br/>
+<a href="/wap_page/?object_name=page" class="function_button">定义页面模板</a><br/>
+<a href="/wap_page_special/" class="function_button">定义特殊页面</a><br/>
+---<br/>
+<a href="/wap_is_designer/" class="function_button">设计管理</a><br/>
+---<br/>
+<a href="/wap_index/" class="function_button">游戏首页</a><br />
+-->
+
+
+		<h3>『设计大厅』</h3>
+		<div class="hr"></div>
+		<a href="/wap_attribute_basic/" class="function_button set"><span class="settxt">基本属性</span></a>
+		<a href="/wap_attribute/" class="function_button set"><span class="settxt">定义属性</span></a><br/>
+		<a href="/wap_event/" class="function_button set"><span class="settxt">公共事件</span></a>
+		<a href="/wap_type/" class="function_button set"><span class="settxt">装备类型</span></a><br/>
+		<a href="/wap_expression/?object_name=expression" class="function_button set"><span class="settxt">定义表达式</span></a>
+        <a  class="function_button set"><span class="settxt">---</span></a><br/>
+        <div class="hr"></div>
+		<a href="/wap_area_name/?object_name=npc" class="function_button set"><span class="settxt">设计NPC</span></a>
+		<a href="/wap_area_name/?object_name=map" class="function_button set"><span class="settxt">设计地图</span></a><br/>
+		<a href="/wap_area_name_list/?object_name=skill" class="function_button set"><span class="settxt">设计技能</span></a>
+		<a href="/wap_task_area_name/?object_name=task" class="function_button set"><span class="settxt">设计任务</span></a><br/>
+		<a href="/wap_area_name/?object_name=item" class="function_button set"><span class="settxt">设计物品</span></a>
+		<a href="/wap_area_name_list/?object_name=zuoqi" class="function_button set"><span class="settxt">设计坐骑</span></a><br/>
+		<a href="/wap_area_name_list/?object_name=chongwu" class="function_button set"><span class="settxt">设计宠物</span></a>
+		<a  class="function_button set"><span class="settxt">---</span></a><br/>
+
+        <div class="hr"></div>
+		<a href="/wap_page_special/" class="function_button set"><span class="settxt">特殊页面</span></a>
+		<a href="/admin/page_mb" class="function_button set"><span class="settxt">页面模板</span></a>
+		<div class="hr"></div>
+		<a href="/wap_is_designer/" class="function_button gm">设计管理</a>
+        <a href="/wap_player/" class="function_button gm">玩家管理</a><br/>
+        <a href="/wap_img/" class="function_button gm">图片管理</a>
+        <a href="/wap_auction_area_name/" class="function_button gm">交易管理</a><br/>
+        <!-- <a class="function_button gm">---</a><br/> -->
+		<div class="hr"></div>
+		<a href="/index/" class="function_button gm">游戏首页</a><br />
+				<style>
+		*{
+			padding: 0;
+			margin: 0;
+		}
+		html,body{
+			width: 100%;
+			height: 100%;
+			text-align: center;
+		}
+		a{
+			text-align: center;
+			color: white;
+			background-color: #197FD8;
+			text-decoration: none;
+			display: inline-block;
+			width: 25%;
+			height: 40px;
+			line-height: 40px;
+			margin-top: 4px;
+		}
+		.hr{
+			width: 80%;
+			height: 1px;
+			border: 0.5px solid gray;
+			margin:20px 10%;
+		}
+		.set{
+			border-radius: 4px;
+		}
+		.set:hover{
+			box-shadow: 0 0 10px gray;
+		}
+		.gm{
+			background-color: #4CAF50;
+			color:white;
+		}
+		.gotoindex{
+			background-color: #000000;
+		}
+		.settxt{
+			 cursor: pointer;
+			 display: inline-block;
+			 position: relative;
+			 transition: 0.5s;
+			 color:white;
+		}
+		.settxt:after{
+			  content: '';
+			  position: absolute;
+			  opacity: 0;
+			  top: 0;
+			  right: -10px;
+			  transition: 0.5s;
+		}
+		a:hover span {
+		  padding-right: 20px;
+		}
+		a:hover span:after {
+		  opacity: 1;
+		  right: 0;
+		}
+		ahr{
+
+			width: 80%;
+			display: block;
+			margin-top: 20px;
+			margin-bottom: 20px;
+		}
+		@media screen and (max-width: 390px) {
+			a{
+				width: 40%;
+			}
+		}
+		@media screen and (max-width: 250px) {
+			a{
+				width: 60%;
+			}
+		}
+		@media screen and (min-width: 600px) {
+			a{
+				width: 20%
+			}
+		}
+		@media screen and (min-width: 800px) {
+			a{
+				width: 17%;
+			}
+		}
+		@media screen and (min-width: 900px) {
+			a{
+				width: 15%;
+			}
+		}
+		@media screen and (min-width: 1000px) {
+			a{
+				width: 15%;
+			}
+		}
+		</style>
+<!-- /container -->
+ {% endblock %}

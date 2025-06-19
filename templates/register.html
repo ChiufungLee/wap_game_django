@@ -1,0 +1,123 @@
+{% extends 'base.html' %}
+
+{% block title %}注册{% endblock %}
+
+{% block css %}
+<script src="https://cdn.bootcdn.net/ajax/libs/jquery/3.6.0/jquery.min.js"></script>
+<script type="text/javascript">
+
+function sendVerificationCode() {
+    var email = document.getElementById('email').value;
+    var errmsg = document.getElementById("errmsg");
+    if (!email) {
+	    // alert('请输入邮箱地址！');
+	    errmsg.innerHTML="请输入邮箱地址！";
+	    return false;
+	}
+    // 在这里调用后台发送验证码的接口，并传入邮箱地址 email
+    $.ajax({
+	    url: '/send_code/',
+	    type: 'POST',
+	    data: {
+	      'email': email,
+	      'csrfmiddlewaretoken': '{{ csrf_token }}'
+	    },
+	    success: function(data) {
+	      // 成功响应时返回一个包含提示信息的字符串
+	      // alert(data);
+			errmsg.innerHTML=data;
+
+			var sendButton = document.getElementById('sendButton');
+			sendButton.disabled = true;
+			var seconds = 60;
+
+			var countdownInterval = setInterval(function() {
+			    seconds--;
+			    sendButton.innerText = '' + seconds + '秒后重新发送';
+
+			    if (seconds <= 0) {
+			        clearInterval(countdownInterval);
+			        sendButton.disabled = false;
+			        sendButton.innerText = '发送验证码';
+			    }
+			}, 1000);
+
+		},
+	    error: function(xhr, status, error) {
+	      if (xhr.status === 403) {
+	        // 如果返回状态码为 403，即需要等待的情况
+	        alert(xhr.responseText);  // 显示返回的等待时间信息
+	      } else {
+	        // alert('发送验证码失败！');
+	        errmsg.innerHTML="发送验证码失败！";
+	      }
+	    }
+	});
+}
+
+	function register() {
+		var errmsg = document.getElementById("errmsg");
+		var form = document.registerform;
+		var username = form.username.value.trim();
+		var password = form.password.value.trim();
+		var retype = form.retype.value.trim();
+		// var name = form.name.value.trim();
+		if(!/^(?!\d+$)[a-zA-Z0-9_@.]{6,24}$/.test(username)) {
+			errmsg.innerHTML="登录账号长度为6~24位，<br />由字母数字下划线组成，不能为纯数字，<br />推荐使用邮箱地址作为登录账号";
+			form.username.select();
+			return false;
+		}
+		if(password.length < 6 || password.length > 24) {
+			errmsg.innerHTML="密码长度为6~24位";
+			form.password.select();
+			return false;
+		}
+		if(password != retype) {
+			errmsg.innerHTML="两次密码输入不一致";
+			form.retype.select();
+			return false;
+		}
+		// if(!/^[\u4e00-\u9fa5]{2,10}$/.test(name)) {
+		// 	errmsg.innerHTML="名称为2~10位汉字";
+		// 	form.name.select();
+		// 	return false;
+		// }
+		// return true;
+	}
+
+</script>
+{% endblock %}
+
+{% block content %}
+<p id="errmsg" class="red">{{message}}</p>
+<form name="registerform" action="/register/" method="post">
+	{% csrf_token %}
+	<h4>======>账号信息<======</h4>
+	<p>登录账号(6~24位)：</p><input type="text" name="username" />
+	<!-- <p>邮箱：</p>
+	<input type="email" id="email" name="email" required /><input type="button" id="sendButton" value="发送验证码" onclick="sendVerificationCode();"/><span id="countdown"></span> -->
+
+	<p>登录密码(6~24位)：</p><input type="password" name="password" />
+	<p>重复密码(6~24位)：</p><input type="password" name="re_password" />
+    <p>安全码：</p><input type="text" name="security_code" />
+<div class="form-group">
+    <label>验证码</label>
+    <img src="{{ captcha_image }}" alt="验证码" style="border: 1px solid #ddd; margin-bottom: 10px;">
+    <input type="text" name="captcha" required>
+</div>
+
+	<p><input type="submit" value="注册" onclick="return register();" /></p>
+	<p><a href="/login/">已有账号？>>登录</a></p>
+	
+	
+</form>
+
+{% if messages %}
+    <ul class="messages">
+        {% for message in messages %}
+            <li{% if message.tags %} class="{{ message.tags }}"{% endif %}>{{ message }}</li>
+        {% endfor %}
+    </ul>
+{% endif %}
+
+{% endblock %}

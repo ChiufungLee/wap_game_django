@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    {% load static %}
+    <title>{% block title %} base {% endblock %}</title>
+    <link rel="stylesheet" type="text/css" href="/static/css/common.css">
+    <!-- <link rel="stylesheet" type="text/css" href="../static/login/css/register.css"> -->
+    {% block css %}{% endblock %}
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+        body {
+            font-family: Arial, sans-serif;
+            font-size: 18px;
+            margin: 0;
+            padding: 20px;
+            background-color: #f4f4f4;
+        }
+        .red {
+            color: red;
+        }
+        .messages {
+            list-style-type: none;
+            padding: 0;
+        }
+        p {
+            margin: 2px 0;
+
+        }
+        .success {
+            color: green;
+        }
+        .error {
+            color: red;
+        }
+        .load_time {
+            font-size: 16px;
+            color: #555;
+        }
+    </style>
+</head>
+<body>
+{% block content %}
+{% endblock %}
+
+<!-- <a href="#" onclick="goBack()">返回上页</a>
+<a href="/wap/?cmd={{wap_encrypted_param}}" >返回游戏</a> -->
+
+<div>
+    <p class="load_time">{% if load_time %} 耗时：{{ load_time }}</p>
+    {% else %}
+    <p></p>
+    {% endif %}
+</div>
+<!-- <button onclick="goBack()">返回上一页</button> -->
+
+
+
+<script>
+function goBack() {
+    window.history.back(); // 等同于浏览器的"后退"按钮
+}
+</script>
+
+<script>
+
+
+    // 检查会话状态
+async function checkSession() {
+    try {
+        const response = await fetch('/api/session/check/');
+        const data = await response.json();
+        
+        if (!data.session_active) {
+            // 尝试从本地存储恢复
+            const savedSession = localStorage.getItem('user_session');
+            if (savedSession) {
+                const session = JSON.parse(savedSession);
+                
+                // 发送恢复请求
+                const recoveryResponse = await fetch('/api/session/recover/', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-Session-Recovery': savedSession
+                    }
+                });
+                
+                if (recoveryResponse.ok) {
+                    // 恢复成功，刷新页面
+                    window.location.reload();
+                    return;
+                }
+            }
+            
+            // 重定向到登录页
+            window.location.href = '/login?timeout=1';
+        }
+    } catch (error) {
+        console.error('会话检查失败:', error);
+    }
+}
+
+// 页面加载时检查
+window.addEventListener('load', () => {
+    // 只在需要认证的页面检查
+    if (isProtectedPage()) {
+        checkSession();
+    }
+});
+
+// 登录成功后保存会话信息
+function saveSessionToLocal(userData) {
+    const sessionData = {
+        user_id: userData.id,
+        token: generateLocalToken() // 生成唯一令牌
+    };
+    
+    localStorage.setItem('user_session', JSON.stringify(sessionData));
+    
+    // 发送令牌到服务器存储
+    fetch('/api/session/save-token/', {
+        method: 'POST',
+        body: JSON.stringify({
+            token: sessionData.token
+        })
+    });
+}
+
+
+</script>
+    <!-- <script>
+        // 尝试从localStorage恢复状态
+        document.addEventListener('DOMContentLoaded', function() {
+            const lastParams = localStorage.getItem('lastValidParams');
+            if (lastParams) {
+                const url = new URL(window.location.href);
+                const params = new URLSearchParams(lastParams);
+                
+                // 更新URL参数
+                params.forEach((value, key) => {
+                    url.searchParams.set(key, value);
+                });
+                
+                // 立即重定向
+                window.location.href = url.toString();
+            } else {
+                // 3秒后刷新
+                setTimeout(() => {
+                    window.location.reload();
+                }, 3000);
+            }
+        });
+    </script> -->
+</body>
+</html>

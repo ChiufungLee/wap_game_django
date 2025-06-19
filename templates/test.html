@@ -1,0 +1,18 @@
+{% extends 'base.html' %}
+
+{% block title %} {{page.name}} {% endblock %}
+
+{% block css %}
+{% endblock %}
+
+{% block content %}
+  <div class="game-container">
+        <h1>{{ page.name }}</h1>
+        
+        {% for html in components_html %}
+            {{ html|safe }}
+        {% endfor %}
+    </div>
+    {{ page_js|safe }}
+
+{% endblock %}

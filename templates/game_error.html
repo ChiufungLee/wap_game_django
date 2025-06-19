@@ -1,0 +1,21 @@
+{% extends 'base.html' %}
+
+{% block title %}错误{% endblock %}
+
+{% block css %}
+
+{% endblock %}
+
+{% block content %}
+<p id="errmsg" class="red">{{error_message}}</p>
+{% if messages %}
+<ul class="messages">
+    {% for message in messages %}
+    <li class="{{ message.tags }}">{{ message }}</li>
+    {% endfor %}
+</ul>
+{% endif %}
+
+<p><a href="/login/">返回首页</a></p>
+
+{% endblock %}

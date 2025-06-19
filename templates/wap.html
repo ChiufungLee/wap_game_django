@@ -1,0 +1,179 @@
+
+{% extends 'base.html' %}
+
+
+
+{% block title %}首页{% endblock %}
+
+{% block css %}
+<script type="text/javascript">
+    function login() {
+        var errmsg = document.getElementById("errmsg");
+        var form = document.loginform;
+        var username = form.username.value.trim();
+        var password = form.password.value.trim();
+        var savepass = form.savepass.checked;
+        if(0 == username.length) {
+            errmsg.innerHTML="请输入账号";
+            form.username.select();
+            return false;
+        }
+        if(0 == password.length) {
+            errmsg.innerHTML="请输入密码";
+            form.password.select();
+            return false;
+        }
+        setCookie("username", username, savepass ? 30 : 0);
+        setCookie("password", password, savepass ? 30 : 0)
+        return true;
+    }
+    window.onload = function() {
+        var form = document.loginform;
+        form.username.value = getCookie("username");
+        form.password.value = getCookie("password");
+    };
+    function setCookie(name, value, exdays) {
+        var d = new Date();
+        d.setTime(d.getTime()+(exdays*24*60*60*1000));
+        var expires = "expires="+d.toGMTString();
+        document.cookie = name+"="+value+"; "+expires;
+    }
+    function getCookie(name) {
+        var n = name + "=";
+        var cookies = document.cookie.split(';');
+        for(var i=0; i<cookies.length; i++) {
+            var c = cookies[i].trim();
+            if (c.indexOf(n)==0) { return c.substring(n.length,c.length); }
+        }
+        return "";
+    }
+</script>
+{% endblock %}
+
+{% block content %}
+<p id="errmsg" class="red">{{error_message}}</p>
+
+        {% if messages %}
+        <ul class="messages">
+            {% for message in messages %}
+            <li class="{{ message.tags }}">{{ message }}</li>
+            {% endfor %}
+        </ul>
+        {% endif %}
+
+
+<p>欢迎，{{ player.name }}(ID:{{ player.id }})</p>
+
+<div>
+    <div>
+        <p><a href="">这是一条置顶公告</a></p>
+        <p> [{{map.name}}(ID:{{map.id}})] <a href="/wap/?cmd={{chat_encrypted_param}}">聊天</a> | <a href="">商城</a> | <a href="">刷新</a></p>
+    </div>
+-------------------------------
+    <div>
+        <!-- {% for chat in chatlists %}
+            <div class="chat-message">
+                {% if chat.type_id == 1 %}
+                    <p><span class="system">[系统]</span><span class="user">{{ chat.message|safe }}({{chat.created_at|date:"m月d日 H:i:s"}})</span></p>
+                {% else %}
+                    <span class="user">{{ chat.message.message }}</span>
+                {% endif %}
+                 <p>{{ chat|safe }}</p>
+                 <span class="timestamp">{{ chat.created_at|date:"H:i" }}</span>
+            </div>
+        {% endfor %} -->
+        {% for chat in chat_list %}
+            <div class="chat-message">
+  
+                <p>{{ chat|safe }}</p>
+                <!-- <span class="timestamp">{{ chat.created_at|date:"H:i" }}</span> -->
+            </div>
+        {% endfor %}
+    </div>
+-------------------------------
+</div>
+<p>{% if npcs %}你遇到了：{% for npc in npcs %}<a href="/wap/?cmd={{ npc.cmd_params }}">{{ npc.name }}</a>、{% endfor %}{% endif %}</p>
+
+<!-- NPC区域 -->
+<!-- {% if npcs %}
+<div class="section">
+    <div class="npc-list">
+        {% for npc in npcs %}
+        <div class="npc">
+             使用 npc.interact_link 而不是动态生成键名 
+            <a href="/wap/?cmd={{ npc.interact_link }}">{{ npc.name }}</a>
+            {% if npc.type == 'shop' %}[商店]{% endif %}
+            {% if npc.type == 'quest' %}[任务]{% endif %}
+        </div>
+        {% endfor %}
+    </div>
+</div>
+{% endif %} -->
+<p>{% if monsters %}危险生物：
+    {% for monster in monsters %}
+
+    <a href="/wap/?cmd={{ monster.cmd_params }}">{{ monster.name }}</a>、
+
+        
+
+    {% endfor %}
+    {% endif %}</p>
+<p>{% if items %}地上掉落：{% for item in items %}<a href="/wap/?cmd={{ item.cmd_params }}">{{ item.name }} {{item.id}}</a>、{% endfor %}{% endif %}</p>
+<p>{% if map_players %}附近还有：{% for player in map_players %}<a href="/wap/?cmd={{ player.cmd_params }}">{{ player.name }}</a>、{% endfor %}{% endif %}</p>
+</div>
+
+    <div>
+        <!-- <p>请选择出口：</p>
+        {% if map.north %}
+            <p><span>北：<a href="">{{map.north}}</a></span> 
+        {% else %}
+            <p><span></span>
+        {% endif %}
+        {% if map.east %}
+            <p><span>东：<a href="">{{map.east}}</a></span> 
+        {% else %}
+            <p><span></span>
+        {% endif %}
+
+        {% if map.south %}
+            <p><span>南：<a href="">{{map.south}}</a></span> 
+        {% else %}
+            <p><span></span>
+        {% endif %} 
+
+        {% if map.west %}
+            <p><span>西：<a href="">{{map.west}}</a></span> 
+        {% else %}
+            <p><span></span>
+        {% endif %} -->
+
+        <!-- <span>东：<a href="">京城</a></p></span>
+        <p><span>西：<a href="">{{map.west}}</a> </span> <span>南：<a href="">泉州</a></p></span> -->
+
+        <div class="section">
+            <p>请选择出口：</p>
+            <div class="exit-links">
+                {% for direction,info in exits.items %}
+                <p>{{ direction|upper }}：<a href='/wap/?cmd={{ info.cmd_params }}' class="exit-link">{{ info.name }}</a></p>
+                {% endfor %}
+            </div>
+        </div>
+        <p><a href="">查看地图</a></p>
+
+    </div>
+-------------------------------
+    <div>
+        <p><a href="/wap/?cmd={{player_encrypted_param}}">状态</a> | <a href="">装备</a> | <a href="/wap/?cmd={{item_encrypted_param}}">背包</a></p>
+        <p><a href="/wap/?cmd={{skill_encrypted_param}}">斗技</a> | <a href="/wap/?cmd={{gang_encrypted_param}}">宗门</a> | <a href="/wap/?cmd={{team_encrypted_param}}">队伍</a></p>
+        <!-- <p><a href="">神器</a> | <a href="">秘技</a> | <a href="">天赋</a></p> -->
+        <p><a href="">好友</a> | <a href="">交易</a> | <a href="/index/">首页</a></p>
+    </div>
+</div>
+
+
+
+        {% for item in content %}
+            {{ item|safe }}
+        {% endfor %}
+
+{% endblock %}

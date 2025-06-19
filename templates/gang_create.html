@@ -1,0 +1,74 @@
+{% extends 'base.html' %}
+
+{% block title %}登录{% endblock %}
+
+{% block css %}
+<script type="text/javascript">
+	function login() {
+		var errmsg = document.getElementById("errmsg");
+		var form = document.loginform;
+		var username = form.username.value.trim();
+		var password = form.password.value.trim();
+		var remember_me = form.remember_me.checked;
+		if(0 == username.length) {
+			errmsg.innerHTML="请输入账号";
+			form.username.select();
+			return false;
+		}
+		if(0 == password.length) {
+			errmsg.innerHTML="请输入密码";
+			form.password.select();
+			return false;
+		}
+		setCookie("username", username, remember_me ? 30 : 0);
+		setCookie("password", password, remember_me ? 30 : 0)
+		return true;
+	}
+	window.onload = function() {
+		var form = document.loginform;
+		form.username.value = getCookie("username");
+		form.password.value = getCookie("password");
+	};
+	function setCookie(name, value, exdays) {
+	    var d = new Date();
+	    d.setTime(d.getTime()+(exdays*24*60*60*1000));
+	    var expires = "expires="+d.toGMTString();
+	    document.cookie = name+"="+value+"; "+expires;
+	}
+	function getCookie(name) {
+	    var n = name + "=";
+	    var cookies = document.cookie.split(';');
+	    for(var i=0; i<cookies.length; i++) {
+	        var c = cookies[i].trim();
+	        if (c.indexOf(n)==0) { return c.substring(n.length,c.length); }
+	    }
+	    return "";
+	}
+</script>
+{% endblock %}
+
+{% block content %}
+{{ game.description|safe }}
+
+<p id="errmsg" class="red">{{error_message}}</p>
+{% if messages %}
+<ul class="messages">
+    {% for message in messages %}
+    <li class="{{ message.tags }}">{{ message }}</li>
+    {% endfor %}
+</ul>
+{% endif %}
+<form action="/wap/?cmd={{ create_param }}" method="post">
+	{% csrf_token %}
+	<h4>======>宗门信息<======</h4>
+    <p>创建宗门需玩家等级达到50级，消耗宗门令牌x1，请决定后再创建。</p>
+    <p>请输入你的中文宗门名称，一旦选定无法更改，请仔细选取（名字长度不能超过六个中文汉字）：</p>
+	<p>宗门名称：<input type="text" name="player_name" /></p>
+
+	<p>宗门宗旨：<input type="text" name="signature" /></p>
+	<p><input type="submit" value="创建宗门" onclick="return login();" /></p>
+</form>
+
+<p><a href="/index/">返回首页</a></p>
+
+{% endblock %}

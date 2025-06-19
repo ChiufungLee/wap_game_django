@@ -1,0 +1,44 @@
+{% extends 'base.html' %}
+{% block title %} 进入游戏 {% endblock %}
+{% load static %}
+
+{% block content %}
+
+<img src="{% static 'images/pets/赤焰马.png' %}" alt="runoob-logo" width="240px" height="200px">
+
+
+<div id="content">
+	<p>欢迎你，{{ user }}</p>
+
+    {% if has_player %}
+        <p><a href="/wap/?cmd={{wap_encrypted_param}}">进入游戏（{{player.name}}）</a></p>
+    {% else %}
+        <p><a href="/wap/?cmd={{player_encrypted_param}}">你还没有角色，点击创建角色</a></p>
+        
+    {% endif %}
+    
+
+{% if user_admin %}
+    <p><a href="/wapadmin/?cmd={{admin_encrypted_param}}">进入后台</a></p>
+{% else %}
+
+{% endif %}
+
+    <p><a href="">修改密码</a></p>
+    <p><a href="/logout/">退出登录</a></p>
+
+<!-- <p>【健康游戏忠告】</p>
+<p>抵制不良游戏，拒绝盗版游戏。</p>
+<p>注意自我保护，谨防受骗上当。</p>
+<p>适度游戏益脑，沉迷游戏伤身。</p>
+<p>合理安排时间，享受健康生活。</p> -->
+
+</div>
+<p>想要寻找志同道合的小伙伴？请加Q群<a href="">2272963989</a></p>
+<p>遇到问题？请联系QQ:<a href="">2272963989</a></p>
+
+
+
+
+
+{% endblock %}

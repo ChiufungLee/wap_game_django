@@ -1,0 +1,184 @@
+{% extends 'base.html' %}
+
+{% block title %}登录{% endblock %}
+
+{% block css %}
+<script type="text/javascript">
+	function login() {
+		var errmsg = document.getElementById("errmsg");
+		var form = document.loginform;
+		var username = form.username.value.trim();
+		var password = form.password.value.trim();
+		var remember_me = form.remember_me.checked;
+		if(0 == username.length) {
+			errmsg.innerHTML="请输入账号";
+			form.username.select();
+			return false;
+		}
+		if(0 == password.length) {
+			errmsg.innerHTML="请输入密码";
+			form.password.select();
+			return false;
+		}
+		setCookie("username", username, remember_me ? 30 : 0);
+		setCookie("password", password, remember_me ? 30 : 0)
+		return true;
+	}
+	window.onload = function() {
+		var form = document.loginform;
+		form.username.value = getCookie("username");
+		form.password.value = getCookie("password");
+	};
+	function setCookie(name, value, exdays) {
+	    var d = new Date();
+	    d.setTime(d.getTime()+(exdays*24*60*60*1000));
+	    var expires = "expires="+d.toGMTString();
+	    document.cookie = name+"="+value+"; "+expires;
+	}
+	function getCookie(name) {
+	    var n = name + "=";
+	    var cookies = document.cookie.split(';');
+	    for(var i=0; i<cookies.length; i++) {
+	        var c = cookies[i].trim();
+	        if (c.indexOf(n)==0) { return c.substring(n.length,c.length); }
+	    }
+	    return "";
+	}
+</script>
+{% endblock %}
+
+{% block content %}
+
+<p id="errmsg" class="red">{{error_message}}</p>
+{% if messages %}
+<ul class="messages">
+    {% for message in messages %}
+    <li class="{{ message.tags }}">{{ message }}</li>
+    {% endfor %}
+</ul>
+{% endif %}
+
+
+{% if op_action == 'detail_gang' %}
+
+	<p>【宗门信息】</p>
+	<p>------------------</p>
+	<p>宗门名称：{{gang.name}}</p>
+	<p>帮会宗旨：{% if gang.description %} {{gang.description}} {% else %} 这个宗门很神秘，什么消息也没有。{% endif %}</p>
+	<p>帮会等级：{{gang.level}}级</p>
+	<p>帮主：<a href="/wap/?cmd={{player_encrypted_param}}">{{gang.leader}}</a></p>
+	<p>帮会人数：{{ gang.member_count }}/{{ gang.max_count }}</p>
+	<p>帮会资金：{{gang.money}}</p>
+	<p>帮会声望：{{gang.reputation}}</p>
+	<p>帮会成员：	{% for member in member_list %} {{ member|safe }} {% endfor %}</p>
+	<!-- <p>【帮会繁荣】：15000</p>
+	<p>【帮会科技】：强健(5级) 强攻(5级) 坚甲(5级)</p>
+	<p>【帮会福利】：双倍经验(未激活)</p> -->
+
+	{% if is_ongang or has_apply_gang %}
+	{% else %}
+	<p>{% if current_gang == gang.id %} {% else %} <a href="/wap/?cmd={{apply_gang_params}}">申请加入宗门</a> {% endif %} </p>
+	{% endif %}
+
+
+{% elif op_action == 'detail_team' %}
+
+	<p>【队伍信息】</p>
+	<p>队长：<a href="/wap/?cmd={{teamleader_encrypted_param}}">{{team.leader}}</a></p>
+
+	
+	{% for member in member_list %}
+	<p>队员：{{ member|safe }}</p>
+	{% endfor %}
+
+	<p>队伍人数：{{ team.member_count }}/{{team.max_size}}</p>
+	<p>属性加成：生命、攻击、防御额外增加0%。</p>
+	
+	<p>队伍说明：</p>
+	<p>1：普通队伍最多进5人。</p>
+	<p>2：队伍在线人数越多，攻防血加成越高。</p>
+
+
+	
+	{% if is_onteam %}<p><a href="javascript:void(0);" onclick="confirmExit()">退出队伍</a></p>{% else %} {% endif %}
+
+
+{% elif op_action == 'record_apply_gang' %}
+	<p>【申请记录】</p>
+	{% if is_gangleader %}
+		{% if record_list %}
+			{% for record in record_list %}
+			<p>{{ forloop.counter }}. {{ record|safe }}</p>
+			{% endfor %}
+		{% else %}
+		<p>暂无申请记录</p>
+		{% endif %}
+	
+	{% else %}
+		{% if has_record %}
+		<p>申请加入的宗门：{{ get_apply_record.gang }}</p>
+		<p>审核状态：<span class="red">{{ get_apply_record.get_status_display }}</span></p>
+		<p>申请时间：{{ get_apply_record.applied_time|date:"Y年m月d日 H:i:s" }}</p>
+		<p><a href="/wap/?cmd={{revoke_apply_record}}">撤回申请</a></p>
+		{% else %}
+		<p>暂无申请记录</p>
+		{% endif %}
+	{% endif %}
+
+{% elif op_action == 'detail_skill' %}
+	<p>【技能详情】</p>
+
+		<p>名称：{{ skill.skill }}</p>
+		<p>等级：{{ skill.rank_display }}</p>
+		<p>经验：{{ skill.current_xp }}/{{skill.max_xp}}</p>
+		<p>攻击：{{ skill.attack }}</p>
+		<p>防御：{{ skill.defense }}</p>
+		<p>灵魂力：{{ skill.linghunli }}</p>
+		<p>斗气：{{ skill.douqi }}</p>
+
+
+{% elif op_action == 'detail_item' %}
+	<p>【物品详情】</p>
+
+		<p>名称：{{ playeritem.item.name }}</p>
+		<p>描述：{{ playeritem.description }}</p>
+		<p>负重：{{ playeritem.item.weight }}</p>
+		<p>攻击：{{ playeritem.attack }}</p>
+		<p>防御：{{ playeritem.defense }}</p>
+		<p>灵魂力：{{ playeritem.linghunli }}</p>
+		<p>斗气：{{ skill.douqi|safe }}</p>
+
+		{% if himself %}
+			{% if playeritem.is_equipped %}
+			<p>{{unequip_link|safe}}</p>
+			{% else %}
+			<p>{{equip_link|safe}}</p>
+			<p><a href="/wap/?cmd={{drop_encrypted_param}}">丢弃物品</a></p>
+			{% endif %}
+		{% else %}
+		{% endif %}
+
+
+{% else %}
+
+{% endif %}
+
+
+<p><a href="#" onclick="goBack()">返回上页</a></p>
+<p><a href="/wap/?cmd={{wap_encrypted_param}}">返回首页</a></p>
+<script>
+
+function confirmExit() {
+
+if (confirm('确定要退出队伍吗？')) {
+
+	// 用户点击确认，跳转到退出队伍的链接
+
+	window.location.href = "/wap/?cmd={{breakteam_encrypted_param}}";
+
+	}
+
+}
+
+</script>
+{% endblock %}

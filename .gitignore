@@ -1,0 +1,30 @@
+# Django
+*.log
+*.pot
+*.pyc
+__pycache__/
+db.sqlite3
+media/
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE
+.idea/
+.vscode/
+
+# 安全：永远不要提交包含敏感信息的文件！
+secrets.json
+local_settings.py
+
+# 静态文件（如果使用 collectstatic）
+staticfiles/
+
+secrets.json
+celerybeat-schedule

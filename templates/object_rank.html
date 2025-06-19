@@ -1,0 +1,156 @@
+{% extends 'base.html' %}
+
+{% block title %}聊天{% endblock %}
+
+{% block css %}
+
+{% endblock %}
+
+{% block content %}
+    <div class="chat-container">
+        {% if messages %}
+        <ul class="messages">
+            {% for message in messages %}
+            <li class="{{ message.tags }}">{{ message }}</li>
+            {% endfor %}
+        </ul>
+        {% endif %}
+
+
+        {% if op_action == 'list_chat' %}
+        <div class="chat-tabs">
+            <a href="">世界</a> | <a href="">私聊</a> | <a href="">帮派</a> | <a href="">队伍</a> | <a href="">系统</a>
+        </div>
+        
+        <!-- 私聊接收者输入框 -->
+        <div class="private-receiver" id="private-receiver" style="display:none;">
+            <input type="text" id="receiver-input" placeholder="输入对方玩家ID">
+            <button onclick="setPrivateReceiver()">确定</button>
+        </div>
+        
+        <div class="messages-container" id="messages-container">
+            <!-- 消息将通过JavaScript动态添加 -->
+        {% for chat in chat_list %}
+            <div class="chat-message">
+  
+                <p>{{ chat|safe }}</p>
+                <!-- <span class="timestamp">{{ chat.created_at|date:"H:i" }}</span> -->
+            </div>
+        {% endfor %}
+        </div>
+        <div class="input-area">
+            <form action="/wap/?cmd={{create_param}}" method="post">
+            {% csrf_token %}
+            <input type="textarea" name="message_input" placeholder="输入聊天内容..." maxlength="256">
+            <input type="text" name="chatt_input" placeholder="输入聊天内容..." value="{{chat_type_id}}" maxlength="256" hidden>
+            <!-- <textarea name="ltmsg" maxlength="200" rows="2" cols="30" placeholder="输入聊天内容..." style="height: auto;"></textarea> -->
+            <p><input type="submit" value="发送" /></p>
+            </form>
+        </div>
+
+
+        {% elif op_action == 'list_gang'%}
+        <p>【大陆宗门排行】</p>
+        <div class="gang-tabs">
+            <a href="">等级</a> | <a href="">资金</a> | <a href="">人数</a> | <a href="">声望</a>
+        </div>
+
+            {% if gang_list %}
+                {% for gang in gang_list %}
+                    <div class="chat-message">
+                        <p>{{ forloop.counter }}. {{ gang|safe }}</p>
+                        <!-- <span class="timestamp">{{ chat.created_at|date:"H:i" }}</span> -->
+                    </div>
+                {% endfor %}
+            {% else %}
+                    <p>还没有宗门，快来创建第一个吧！</p>
+                    <p><a href="/wap/?cmd={{create_param}}">创建宗门</a></p>
+            {% endif %}
+
+            {% if is_ongang %}
+                    <p><a href="/wap/?cmd={{mygang_encrypted_param}}">我的宗门</a></p>
+            {% else %}
+                    <p><a href="/wap/?cmd={{create_param}}">创建宗门</a></p>
+            {% endif %}
+                    <p><a href="/wap/?cmd={{record_apply_gang}}">申请记录</a></p>
+
+
+
+
+        {% elif op_action == 'list_team'%}
+        <p>【队伍列表】</p>
+        <!-- <div class="gang-tabs">
+            <a href="">等级</a> | <a href="">资金</a> | <a href="">人数</a> | <a href="">声望</a>
+        </div> -->
+
+            {% if team_list %}
+                {% for team in team_list %}
+                    <div class="chat-message">
+                        <p>{{ forloop.counter }}. {{ team|safe }}</p>
+                        <!-- <span class="timestamp">{{ chat.created_at|date:"H:i" }}</span> -->
+                    </div>
+                {% endfor %}
+            {% else %}
+                    <p>还没有队伍，快来创建第一个吧！</p>
+                    <p><a href="/wap/?cmd={{create_param}}">创建队伍</a></p>
+            {% endif %}
+
+            {% if is_onteam %}
+                    <p><a href="/wap/?cmd={{myteam_encrypted_param}}">我的队伍</a></p>
+            {% else %}
+                    <p><a href="/wap/?cmd={{create_param}}">创建队伍</a></p>
+            {% endif %}
+
+
+
+        {% elif op_action == 'list_skill'%}
+        <p>【已学会技能】</p>
+        <!-- <div class="gang-tabs">
+            <a href="">等级</a> | <a href="">资金</a> | <a href="">人数</a> | <a href="">声望</a>
+        </div> -->
+
+            {% if skill_list %}
+                {% for skill in skill_list %}
+                    <div class="chat-message">
+                        <p>{{ forloop.counter }}. {{ skill|safe }}</a></p>
+                        <!-- <span class="timestamp">{{ chat.created_at|date:"H:i" }}</span> -->
+                    </div>
+                {% endfor %}
+            {% else %}
+                    <p>还没有技能，快去学习一个吧！</p>
+            {% endif %}
+
+
+        {% elif op_action == 'list_item'%}
+        <p>【背包详情】</p>
+        <div class="gang-tabs">
+            <a href="">装备</a> | <a href="">药品</a> | <a href="">物品</a> | <a href="">宝石</a> | <a href="">其他</a> 
+            
+        </div>
+
+            {% if item_list %}
+                {% for item in item_list %}
+                    <div class="chat-message">
+                        <p>{{ forloop.counter }}. {{ item|safe }}</p>
+                        <!-- <span class="timestamp">{{ chat.created_at|date:"H:i" }}</span> -->
+                    </div>
+                {% endfor %}
+            {% else %}
+                    <p>你的背包空空如也</p>
+            {% endif %}
+
+
+
+    {% else %}
+
+
+
+    {% endif %}
+
+
+
+
+
+    </div>
+    <a href="/wap/?cmd={{wap_encrypted_param}}">返回游戏</a>
+{% endblock %}

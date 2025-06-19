@@ -1,0 +1,66 @@
+{% extends 'base.html' %}
+
+{% block title %}聊天{% endblock %}
+
+{% block css %}
+
+{% endblock %}
+
+{% block content %}
+
+{% if messages %}
+<ul class="messages">
+    {% for message in messages %}
+    <li class="{{ message.tags }}">{{ message }}</li>
+    {% endfor %}
+</ul>
+{% endif %}
+
+    <div class="chat-container">
+
+
+        <div class="chat-tabs">
+            {% if chat_type == 2 %}
+            <p><a>世界</a> | <a href="/wap/?cmd={{siliao_params}}">私聊</a> | <a href="/wap/?cmd={{bangpai_params}}">帮派</a> | <a href="/wap/?cmd={{duiwu_params}}">队伍</a> | <a href="/wap/?cmd={{xitong_params}}">系统</a></p>
+            {% elif chat_type == 3 %}
+            <p><a href="/wap/?cmd={{shijie_params}}">世界</a> | <a>私聊</a> | <a href="/wap/?cmd={{bangpai_params}}">帮派</a> | <a href="/wap/?cmd={{duiwu_params}}">队伍</a> | <a href="/wap/?cmd={{xitong_params}}">系统</a></p>
+            {% elif chat_type == 4 %}
+            <p><a href="/wap/?cmd={{shijie_params}}">世界</a> | <a href="/wap/?cmd={{siliao_params}}">私聊</a> | <a>帮派</a> | <a href="/wap/?cmd={{duiwu_params}}">队伍</a> | <a href="/wap/?cmd={{xitong_params}}">系统</a></p>
+            {% elif chat_type == 5 %}
+            <p><a href="/wap/?cmd={{shijie_params}}">世界</a> | <a href="/wap/?cmd={{siliao_params}}">私聊</a> | <a href="/wap/?cmd={{bangpai_params}}">帮派</a> | <a>队伍</a> | <a href="/wap/?cmd={{xitong_params}}">系统</a></p>
+            {% elif chat_type == 1 %}
+            <p><a href="/wap/?cmd={{shijie_params}}">世界</a> | <a href="/wap/?cmd={{siliao_params}}">私聊</a> | <a href="/wap/?cmd={{bangpai_params}}">帮派</a> | <a href="/wap/?cmd={{duiwu_params}}">队伍</a> | <a>系统</a></p>
+            {% else %}
+            {% endif %}
+        </div>
+        
+        <!-- 私聊接收者输入框 -->
+        <div class="private-receiver" id="private-receiver" style="display:none;">
+            <input type="text" id="receiver-input" placeholder="输入对方玩家ID">
+            <button onclick="setPrivateReceiver()">确定</button>
+        </div>
+        
+        <div class="messages-container" id="messages-container">
+        {% if chat_list%}
+        {% for chat in chat_list %}
+            <div class="chat-message">
+                <p>{{ chat|safe }}</p>
+            </div>
+        {% endfor %}
+        {% else %}
+        <p>暂无消息</p>
+        {% endif %}
+        </div>
+        
+        <div class="input-area">
+            <form action="/wap/?cmd={{create_param}}" method="post">
+            {% csrf_token %}
+            <input type="textarea" name="message_input" placeholder="输入聊天内容..." maxlength="256">
+            <input type="text" name="chatt_input" placeholder="输入聊天内容..." value="{{chat_type_id}}" maxlength="256" hidden>
+            <!-- <textarea name="ltmsg" maxlength="200" rows="2" cols="30" placeholder="输入聊天内容..." style="height: auto;"></textarea> -->
+            <p><input type="submit" value="发送" /></p>
+            </form>
+        </div>
+    </div>
+    <a href="/wap/?cmd={{wap_encrypted_param}}">返回游戏</a>
+{% endblock %}
