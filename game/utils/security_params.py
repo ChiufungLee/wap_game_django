@@ -72,8 +72,8 @@ class ParamSecurity:
         ).hexdigest()[:16]
         
         # 缓存键包含签名确保唯一性
-        cache_key = f"secure_param:{signature}"
-        
+        # cache_key = f"secure_param:{signature}"
+        cache_key = f"secure_param:{unique_id}:{signature}"
         # 存储到缓存（有效期 = max_age + 5分钟缓冲）
         cache.set(cache_key, {
             'action': action,
@@ -81,7 +81,7 @@ class ParamSecurity:
             'param_dict': param_dict,  # 存储原始字典
             'timestamp': timestamp,
         }, timeout=ParamSecurity.DEFAULT_MAX_AGE + 300)
-        
+        print(f"生成参数: entity_type={entity_type}, sub_action={sub_action}, "f"params={params}, action={action}")
         return f"{unique_id}-{signature}"
 
     @staticmethod
@@ -97,10 +97,12 @@ class ParamSecurity:
         unique_id, signature = parts
         
         # 直接从签名获取缓存
-        cache_key = f"secure_param:{signature}"
+        # cache_key = f"secure_param:{signature}"
+        cache_key = f"secure_param:{unique_id}:{signature}"
         data = cache.get(cache_key)
         
         if not data:
+            print(f"缓存缺失: cache_key={cache_key}, param={encrypted_param}")
             return None
             
         # 验证时效性（30分钟）
@@ -128,14 +130,23 @@ class ParamSecurity:
             digestmod='sha256'
         ).hexdigest()[:16]
 
-
+        print(f"签名验证: unique_id={unique_id} signature={signature}")
+        print(f"验证数据: {check_data}")
+        
         if not hmac.compare_digest(signature, expected_signature):
+            print(f"签名验证失败: "
+                f"expected={expected_signature}, "
+                f"actual={signature}, "
+                f"data={check_data}")
             return None
             
         # 验证操作类型（如果指定）
         if expected_action and data['action'] != expected_action:
             return None
-
+        print(f"解密参数: {encrypted_param}")
+        print(f"缓存数据: {data}")
+        print(f"验证签名: check_data={check_data}, "
+            f"expected_signature={expected_signature}, actual={signature}")
         # 返回完整的参数字典
         return {
             'entity_type': data['param_dict']['entity_type'],

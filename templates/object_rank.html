@@ -122,23 +122,37 @@
 
 
         {% elif op_action == 'list_item'%}
-        <p>【背包详情】</p>
-        <div class="gang-tabs">
-            <a href="">装备</a> | <a href="">药品</a> | <a href="">物品</a> | <a href="">宝石</a> | <a href="">其他</a> 
-            
-        </div>
+        <p>[背包详情]</p>
+            <p>金钱：{{money}}</p>
+            <p>容量：{{now_rongliang}}/{{max_rongliang}}</p>
+            <div class="item-tabs">
+                {% if item_type == 1 %}
+                <p>[<a>装备</a> | <a href="/wap/?cmd={{yaopin_params}}">药品</a> | <a href="/wap/?cmd={{wupin_params}}">物品</a> | <a href="/wap/?cmd={{qita_params}}">其他</a> ]</p>
+                {% elif item_type == 2 %}
+                <p><a href="/wap/?cmd={{zhuangbei_params}}">装备</a> | <a>药品</a> | <a href="/wap/?cmd={{wupin_params}}">物品</a> | <a href="/wap/?cmd={{qita_params}}">其他</a> </p>
+                {% elif item_type == 3 %}
+                <p><a href="/wap/?cmd={{zhuangbei_params}}">装备</a> | <a href="/wap/?cmd={{yaopin_params}}">药品</a> | <a>物品</a> | <a href="/wap/?cmd={{qita_params}}">其他</a> </p>
+                {% elif item_type == 6 %}
+                <p><a href="/wap/?cmd={{zhuangbei_params}}">装备</a> | <a href="/wap/?cmd={{yaopin_params}}">药品</a> | <a href="/wap/?cmd={{wupin_params}}">物品</a> | <a>其他</a> </p>
+                {% else %}
+                {% endif %}
+            </div>
 
+        <div class="item-lists">
             {% if item_list %}
                 {% for item in item_list %}
                     <div class="chat-message">
-                        <p>{{ forloop.counter }}. {{ item|safe }}</p>
+                        <p>{{ start_index|add:forloop.counter }}. {{ item|safe }}</p>
                         <!-- <span class="timestamp">{{ chat.created_at|date:"H:i" }}</span> -->
                     </div>
                 {% endfor %}
             {% else %}
                     <p>你的背包空空如也</p>
             {% endif %}
-
+        </div>
+        <div id="pagination">
+            {{ pagination|safe }}
+        </div>
 
 
     {% else %}

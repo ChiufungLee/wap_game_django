@@ -13,6 +13,7 @@
 <p>性别：{{ player.get_gender_display }}</p>
 <p>个性签名：{{ player.signature|default:"这家伙很高深，什么也没透露" }}</p>
 <p>等级：{{ player.rank_title }}</p>
+<p>经验：{{ player.current_exp }}/{{player.max_exp}}</p>
 <p>生命：{{ player.current_hp }}/{{player.max_hp}}</p>
 <p>攻击：{{ player.min_attack }}-{{player.max_attack}}</p>
 <p>防御：{{ player.min_defense }}-{{player.max_defense}}</p>
@@ -43,7 +44,21 @@
 <p>生命：{{ npc.hp }}</p>
 <p>攻击：{{ npc.attack }}</p>
 <p>防御：{{ npc.defense }}</p>
-<!-- <p><a href="/wap/?cmd={{attack_encrypted_param}}">攻击</a></p> -->
+
+    {% if npc.drop_info %}
+      <div class="drop-info">
+        <p>可能掉落:
+
+          {% for drop in drop_info %}
+
+            <a href="/wap/?cmd={{drop.item_params}}">{{ drop.item_name }} </a>、
+
+          {% endfor %}
+        </p>
+      </div>
+    {% endif %}
+
+<p><a href="/wap/?cmd={{attack_encrypted_param}}">攻击</a></p>
 
 <p> {% for skill in player_skills %} <a href="/wap/?cmd={{skill.cmd_params}}">{{skill.name}}</a>{% endfor %} </p>
 {% else %}

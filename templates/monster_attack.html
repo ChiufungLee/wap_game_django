@@ -4,18 +4,70 @@
 
 {% block content %}
 
-<img src="{% static 'images/pets/赤焰马.png' %}" alt="runoob-logo" width="240px" height="200px">
-
 <div id="content"></div>
 {% if op_action == 'attack_monster' %}
 
-<p><a href="">攻击</a> <a href="">查看</a> <a href="">逃跑(50铜币)</a></p>
-<p>你生命：560/1000</p>
-<p>病鸡生命：100/100</p>
+{% if attack_result %}
+    {% if attack_result.player_died %}
+        <div class="defeat">
+            <h3>💀 你被 {{ npc.name }} 击败了！ 💀</h3>
+            <p>你已被传送到安全区，并恢复了部分生命值。</p>
+            <p>当前生命值: {{ attack_result.player_current_hp }}/{{ player.max_hp }}</p>
+            
+            <div class="actions">
+            <a href="/wap/?cmd={{ wap_encrypted_param }}" class="btn">返回安全区</a>
+            </div>
+        </div>
+
+    {% else %}
+        {% if attack_result.skill_used %}
+            <p>你使用了 {{ attack_result.skill_used }} 技能！</p>
+        {% else %}
+            <p>你发动了普通攻击！</p>
+        {% endif %}
+
+        <p>你对怪物造成了 <span class="damage">{{ attack_result.player_damage }}</span> 点伤害！</p>
+        <p>怪物对你造成了 <span class="damage">{{ attack_result.monster_damage }}</span> 点伤害！</p>
+    {% endif %}
+{% endif %}
+
+
+<p><a href="">查看</a> <a href="">逃跑(50铜币)</a></p>
+<p>你生命：{{player.current_hp}}/{{player.max_hp}} -{{ attack_result.monster_damage }}</p>
+<p>你攻击：{{player.min_attack}}-{{player.max_attack}}</p>
+<p>你防御：{{player.min_defense}}-{{player.max_defense}}</p>
 <p>你状态：中毒</p>
-<p>对方状态：虚弱</p>
-
-
+<p>----------------------</p>
+    {% if attack_result.remaining_hp > 0 %}
+        <p>{{npc.name}}生命：{{ attack_result.remaining_hp }}/{{ npc.hp }}  -{{ attack_result.player_damage }}</p>
+        <p>{{npc.name}}状态：虚弱</p>
+        <p> {% for skill in player_skills %} <a href="/wap/?cmd={{skill.cmd_params}}">{{skill.name}}</a>{% endfor %} </p>
+    {% else %}
+        {% if attack_result.killed %}
+        <div class="victory">
+            <p>成功击杀了 {{ npc.name }}</p>
+            
+            {% if reward_info %}
+            <p>获得经验: +{{ reward_info.exp }}</p>
+            <p>获得金钱: +{{ reward_info.gold }} 金币</p>
+            
+                {% if reward_info.loot %}
+                    <p>掉落物品:
+                    {% for item in attack_result.reward_info.loot %}
+                       {{ item.name }} x{{ item.quantity }} 、
+                    {% endfor %}
+                    </p>
+                {% else %}
+                    <p>没有获得物品</p>
+                {% endif %}
+            {% endif %}
+        {% else %}
+        <p> {% for skill in player_skills %} <a href="/wap/?cmd={{skill.cmd_params}}">{{skill.name}}</a>{% endfor %} </p>
+        
+        {% endif %}
+    {% endif %}
+<!-- <p><a href="">攻击</a></p> -->
+    
 {% else %}
 {% endif %}
 

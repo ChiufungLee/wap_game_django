@@ -12,126 +12,126 @@ logger = logging.getLogger(__name__)
 from django.http import HttpRequest, HttpResponse
 from django.template.response import TemplateResponse
 
-class SessionRecoveryMiddleware(MiddlewareMixin):
-    """会话恢复和安全增强中间件"""
-    def process_request(self, request):
+# class SessionRecoveryMiddleware(MiddlewareMixin):
+#     """会话恢复和安全增强中间件"""
+#     def process_request(self, request):
 
-        logger.debug(f"处理请求: {request.path}")
+#         logger.debug(f"处理请求: {request.path}")
         
-        # 检查会话中是否有用户信息
-        if 'user_id' not in request.session:
-            # 尝试从持久化存储恢复会话
-            logger.debug("会话中没有user_id，尝试恢复")
-            self.try_recover_session(request)
+#         # 检查会话中是否有用户信息
+#         if 'user_id' not in request.session:
+#             # 尝试从持久化存储恢复会话
+#             logger.debug("会话中没有user_id，尝试恢复")
+#             self.try_recover_session(request)
             
-        # 验证会话有效性
-        if 'user_id' in request.session:
-            user_id = request.session['user_id']
-            try:
-                # 验证用户是否存在且未被锁定
-                user = User.objects.get(id=user_id)
-                if not user.is_active:
-                    # 用户被锁定，强制登出
-                    return self.force_logout(request)
+#         # 验证会话有效性
+#         if 'user_id' in request.session:
+#             user_id = request.session['user_id']
+#             try:
+#                 # 验证用户是否存在且未被锁定
+#                 user = User.objects.get(id=user_id)
+#                 if not user.is_active:
+#                     # 用户被锁定，强制登出
+#                     return self.force_logout(request)
                     
-                # 将会话绑定到请求对象
-                request.user = user
-            except User.DoesNotExist:
-                # 用户不存在，清除会话
-                return self.force_logout(request)
+#                 # 将会话绑定到请求对象
+#                 request.user = user
+#             except User.DoesNotExist:
+#                 # 用户不存在，清除会话
+#                 return self.force_logout(request)
                 
-    def process_response(self, request, response):
-        # 添加安全头
-        response['X-Frame-Options'] = 'DENY'
-        response['X-Content-Type-Options'] = 'nosniff'
-        response['Referrer-Policy'] = 'strict-origin-when-cross-origin'
-        return response
+#     def process_response(self, request, response):
+#         # 添加安全头
+#         response['X-Frame-Options'] = 'DENY'
+#         response['X-Content-Type-Options'] = 'nosniff'
+#         response['Referrer-Policy'] = 'strict-origin-when-cross-origin'
+#         return response
         
-    def try_recover_session(self, request):
-        """尝试恢复会话"""
-        # 方法1：从cookie中恢复
-        user_id = request.COOKIES.get('persistent_user_id')
-        token = request.COOKIES.get('persistent_token')
+#     def try_recover_session(self, request):
+#         """尝试恢复会话"""
+#         # 方法1：从cookie中恢复
+#         user_id = request.COOKIES.get('persistent_user_id')
+#         token = request.COOKIES.get('persistent_token')
         
-        if user_id and token:
-            try:
-                user = User.objects.get(id=user_id)
-                # 验证持久化令牌（存储在用户模型中）
+#         if user_id and token:
+#             try:
+#                 user = User.objects.get(id=user_id)
+#                 # 验证持久化令牌（存储在用户模型中）
 
-                # 检查用户是否被锁定
-                if not user.is_active:
-                    logger.info(f"尝试恢复被锁定用户 {user.username} 的会话，拒绝")
-                    return False
+#                 # 检查用户是否被锁定
+#                 if not user.is_active:
+#                     logger.info(f"尝试恢复被锁定用户 {user.username} 的会话，拒绝")
+#                     return False
 
-                if user.params.get('persistent_token') == token:
-                    # 恢复会话
-                    request.session['user_id'] = user.id
-                    request.session['username'] = user.username
-                    request.session['user_admin'] = user.is_admin()
+#                 if user.params.get('persistent_token') == token:
+#                     # 恢复会话
+#                     request.session['user_id'] = user.id
+#                     request.session['username'] = user.username
+#                     request.session['user_admin'] = user.is_admin()
 
-            except User.DoesNotExist:
-                pass
+#             except User.DoesNotExist:
+#                 pass
         
-        # 方法2：从本地存储恢复（单页应用）
-        if request.headers.get('X-Session-Recovery'):
-            try:
-                data = json.loads(request.headers['X-Session-Recovery'])
-                user_id = data.get('user_id')
-                token = data.get('token')
+#         # 方法2：从本地存储恢复（单页应用）
+#         if request.headers.get('X-Session-Recovery'):
+#             try:
+#                 data = json.loads(request.headers['X-Session-Recovery'])
+#                 user_id = data.get('user_id')
+#                 token = data.get('token')
                 
-                if user_id and token:
-                    user = User.objects.get(id=user_id)
-                    if user.params.get('local_token') == token:
-                        request.session['user_id'] = user.id
-                        request.session['username'] = user.username
-                        request.session['user_admin'] = user.is_admin()
-                        return True
-            except:
-                pass
+#                 if user_id and token:
+#                     user = User.objects.get(id=user_id)
+#                     if user.params.get('local_token') == token:
+#                         request.session['user_id'] = user.id
+#                         request.session['username'] = user.username
+#                         request.session['user_admin'] = user.is_admin()
+#                         return True
+#             except:
+#                 pass
                 
-        return False
+#         return False
         
-    def force_logout(self, request):
-        """强制登出并重定向"""
-        logger.warning("执行强制登出操作")
-        # 清除会话
-        request.session.flush()
+#     def force_logout(self, request):
+#         """强制登出并重定向"""
+#         logger.warning("执行强制登出操作")
+#         # 清除会话
+#         request.session.flush()
         
-        # 清除持久化cookie
-        response = redirect(reverse('login'))
-        response.delete_cookie('persistent_user_id')
-        response.delete_cookie('persistent_token')
+#         # 清除持久化cookie
+#         response = redirect(reverse('login'))
+#         response.delete_cookie('persistent_user_id')
+#         response.delete_cookie('persistent_token')
         
-        # 添加消息提示
-        print(type(request))
+#         # 添加消息提示
+#         print(type(request))
 
-        messages.warning(request, '会话已过期，请重新登录')
+#         messages.warning(request, '会话已过期，请重新登录')
         
-        return response
+#         return response
 
 
-class CustomErrorHandler(MiddlewareMixin):
-    """自定义错误处理中间件"""
-    def process_exception(self, request, exception):
-        # 记录异常
-        logger.error(f"请求异常: {request.path}", exc_info=True)
+# class CustomErrorHandler(MiddlewareMixin):
+#     """自定义错误处理中间件"""
+#     def process_exception(self, request, exception):
+#         # 记录异常
+#         logger.error(f"请求异常: {request.path}", exc_info=True)
         
-        # 检查会话是否可能丢失
-        if 'user_id' not in request.session:
-            # 尝试恢复会话
-            if SessionRecoveryMiddleware().try_recover_session(request):
-                # 重试请求
-                return None
+#         # 检查会话是否可能丢失
+#         if 'user_id' not in request.session:
+#             # 尝试恢复会话
+#             if SessionRecoveryMiddleware().try_recover_session(request):
+#                 # 重试请求
+#                 return None
         
-        # 特殊处理常见异常
-        if isinstance(exception, User.DoesNotExist) and 'user_id' in request.session:
-            # 用户不存在但会话存在 - 清除会话
-            request.session.flush()
-            return redirect(reverse('login') + '?error=session_expired')
+#         # 特殊处理常见异常
+#         if isinstance(exception, User.DoesNotExist) and 'user_id' in request.session:
+#             # 用户不存在但会话存在 - 清除会话
+#             request.session.flush()
+#             return redirect(reverse('login') + '?error=session_expired')
         
-        # 返回友好错误页面
-        from django.http import HttpResponseServerError
-        return HttpResponseServerError(render_to_string('500.html', request=request))
+#         # 返回友好错误页面
+#         from django.http import HttpResponseServerError
+#         return HttpResponseServerError(render_to_string('500.html', request=request))
 
 # class SecureParamMiddleware(MiddlewareMixin):
 #     def process_request(self, request):
@@ -170,17 +170,8 @@ class SecureParamMiddleware(MiddlewareMixin):
                     if self.is_encrypted_param(value):
                         # 尝试解密参数
                         decrypted = ParamSecurity.decode_param(value)
-                        print(decrypted)
+                        print(f"decrypted:{decrypted}")
                         if decrypted:
-                            # 解析参数值
-                            # parts = decrypted['value'].split(':', 2)
-                            # if len(parts) == 3:
-                            #     request.secure_params[key] = {
-                            #         'entity': parts[0],
-                            #         'sub_action': parts[1],
-                            #         'entity_id': parts[2]
-                            #     }
-                            #     request.secure_data[key] = decrypted
                             # 直接存储解密后的参数字典
                             request.secure_params[key] = {
                                 'entity': decrypted['entity_type'],
@@ -192,12 +183,8 @@ class SecureParamMiddleware(MiddlewareMixin):
                             if key == 'cmd':
                                 self.renew_param_if_needed(request, value)
                         else:
-                            # return redirect('error',error_message="你已太长时间未操作，请重新登录")
-                            # messages.error(request, '会话过期，请重新登录')
-                            # error_message = "你已太长时间未操作，请重新登录"
-                            # return redirect(reverse('error')+'?error_message={error_message}')
                             base_url = reverse('error')
-                            query_string = urlencode({'error': '太长时间未操作，请重新登录'})
+                            query_string = urlencode({'error': '长时间未操作，请重新登录'})
                             return redirect(f'{base_url}?{query_string}')
 
                             
@@ -238,6 +225,11 @@ class SecureParamMiddleware(MiddlewareMixin):
                 #             'entity_id': parts[2]
                 #         }
                 request.secure_data['cmd'] = new_decrypted
+                request.secure_params['cmd'] = {  # 添加上下文更新
+                    'entity': new_decrypted['entity_type'],
+                    'sub_action': new_decrypted['sub_action'],
+                    'params': new_decrypted['params']
+                }
     
     @staticmethod
     def is_encrypted_param(value):
@@ -304,6 +296,27 @@ class RequestTimeMiddleware:
             except UnicodeDecodeError:
                 pass  # 忽略非文本响应
         
+        return response
+
+
+# 缓存命中率
+class CacheStatsMiddleware:
+    def __init__(self, get_response):
+        self.get_response = get_response
+        self.requests = 0
+        self.cache_hits = 0
+    
+    def __call__(self, request):
+        response = self.get_response(request)
+        if 'chat' in request.path:
+            self.requests += 1
+            if hasattr(request, 'cache_hit') and request.cache_hit:
+                self.cache_hits += 1
+            
+            # 每100次请求记录一次命中率
+            if self.requests % 100 == 0:
+                hit_rate = (self.cache_hits / self.requests) * 100
+                logging.info(f"Chat cache hit rate: {hit_rate:.2f}%")
         return response
 
 # class UpdateLastActiveMiddleware:

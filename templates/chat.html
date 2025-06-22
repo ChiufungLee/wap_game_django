@@ -50,17 +50,29 @@
         {% else %}
         <p>暂无消息</p>
         {% endif %}
+
+        <div id="pagination">
+            {{ pagination|safe }}
+        </div>
+
         </div>
         
         <div class="input-area">
-            <form action="/wap/?cmd={{create_param}}" method="post">
+
+            {% if chat_type == 2 or chat_type == 4 or chat_type == 5 %}
+
+            <form action="/wap/?cmd={{create_param}}" method="post"> 
             {% csrf_token %}
             <input type="textarea" name="message_input" placeholder="输入聊天内容..." maxlength="256">
-            <input type="text" name="chatt_input" placeholder="输入聊天内容..." value="{{chat_type_id}}" maxlength="256" hidden>
             <!-- <textarea name="ltmsg" maxlength="200" rows="2" cols="30" placeholder="输入聊天内容..." style="height: auto;"></textarea> -->
             <p><input type="submit" value="发送" /></p>
             </form>
+            {% else %}
+            {% endif %}
         </div>
+
+
+
     </div>
     <a href="/wap/?cmd={{wap_encrypted_param}}">返回游戏</a>
 {% endblock %}

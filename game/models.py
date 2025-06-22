@@ -346,6 +346,7 @@ class Player(models.Model):
     # 核心属性
     level = models.PositiveIntegerField('等级', default=1, )
     current_exp = models.PositiveBigIntegerField('当前经验', default=0)
+    max_exp = models.PositiveBigIntegerField('最大经验', default=0)
     current_hp = models.PositiveIntegerField('当前生命', default=100)
     max_hp = models.PositiveIntegerField('最大生命', default=100)
     min_attack = models.PositiveIntegerField('最小攻击', default=10)
@@ -378,11 +379,13 @@ class Player(models.Model):
     )
     # combat_power = models.PositiveIntegerField('综合战力', default=0)
     # offline_at = models.DateTimeField('离线时间', null=True, blank=True)
+    
     last_active = models.DateTimeField('最后活动时间', auto_now=True)
     is_online = models.BooleanField('是否在线', default=True)
     # 动态扩展字段
     params = models.JSONField('动态属性', default=dict, blank=True)
     bag_capacity = models.IntegerField(default=100, verbose_name="背包容量")
+    money = models.PositiveIntegerField('金钱', default=0)
     # 元数据
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
 
@@ -611,7 +614,6 @@ class Skill(models.Model):
     name = models.CharField('技能名称', max_length=50, unique=True)
     description = models.TextField('技能描述', blank=True, help_text="基础技能描述")
     level = models.PositiveSmallIntegerField('基础等级', default=1)
-    description = models.TextField('技能描述', blank=True, help_text="基础技能描述")
     battle_description = models.TextField(
         '战斗描述', 
         blank=True,
@@ -1422,6 +1424,29 @@ class GameNPC(models.Model):
     def __str__(self):
         return f"{self.name}(ID:{self.id})"
 
+    def save(self, *args, **kwargs):
+        """重写save方法，清除相关缓存"""
+        # 保存前记录旧值（用于位置变化时清除旧地图缓存）
+        from .utils.cache_utils import invalidate_map_cache,invalidate_npc_cache
+        old_map_id = None
+        if self.pk:
+            old_instance = GameNPC.objects.filter(pk=self.pk).first()
+            if old_instance:
+                old_map_id = old_instance.map_id
+        
+        super().save(*args, **kwargs)
+        
+        # 清除NPC自身缓存
+        invalidate_npc_cache(self.id)
+        
+        # 清除相关地图缓存
+        if self.map_id:
+            self.invalidate_map_cache(self.map_id)
+        
+        # 如果位置变化，清除旧地图缓存
+        if old_map_id and old_map_id != self.map_id:
+            self.invalidate_map_cache(old_map_id)
+
 class NPCDropList(models.Model):
     npc = models.ForeignKey(
         'GameNPC', 
@@ -1435,7 +1460,27 @@ class NPCDropList(models.Model):
         related_name='npcdrop',
         verbose_name="掉落物品"
     )
-    gailv = models.IntegerField(default=1, verbose_name='掉落概率')
+    gailv = models.IntegerField(default=50, verbose_name='掉落概率')
+    count = models.IntegerField(default=1, verbose_name='掉落数量')
+
+    class Meta:
+        verbose_name = 'NPC掉落设置'
+    
+    def __str__(self):
+        return f"{self.npc.name}({self.item.name})"
+
+    def save(self, *args, **kwargs):
+        """保存时清除相关缓存"""
+        super().save(*args, **kwargs)
+        # 清除怪物掉落缓存
+        cache.delete(f"npc_drop_info_{self.npc_id}")
+    
+    def delete(self, *args, **kwargs):
+        """删除时清除相关缓存"""
+        npc_id = self.npc_id
+        super().delete(*args, **kwargs)
+        cache.delete(f"npc_drop_info_{npc_id}")
+
 
 class GameMapNPCManager(models.Manager):
     def for_map(self, map_id):
@@ -1469,8 +1514,16 @@ class GameMapNPC(models.Model):
     def save(self, *args, **kwargs):
         """重写save方法，清除地图缓存"""
         super().save(*args, **kwargs)
-        from .utils.cache_utils import invalidate_map_cache
-        invalidate_map_cache(self.map_id)
+        from .utils.cache_utils import invalidate_map_cache,invalidate_npc_cache
+        # invalidate_map_cache(self.map_id)
+        # invalidate_npc_cache(self.npc_id)
+        if self.map_id:
+            # invalidate_map_cache(self.map_id)
+            keys = [
+                f"map_context_{self.map_id}",
+                f"adjacent_maps_{self.map_id}"
+            ]
+            cache.delete_many(keys)
 
 
 
@@ -1694,6 +1747,7 @@ class GameMapItem(models.Model):
         """删除时清除相关地图缓存"""
         map_id = self.map_id
         super().delete(*args, **kwargs)
+        from .utils.cache_utils import invalidate_map_cache
         if map_id:
             invalidate_map_cache(map_id)
 
@@ -1873,15 +1927,14 @@ class PlayerItem(models.Model):
             return False, "添加物品失败，请稍后再试"
 
     @classmethod
-    def remove_item(cls, player, item_id, count=1):
+    def remove_item(cls, player, player_item_id, count=1):
         """高性能移除物品实现"""
-        from django.db import transaction, models
         
         with transaction.atomic():
             # 步骤1: 验证总量是否足够 (避免无效操作)
             total_count = cls.objects.filter(
                 player=player,
-                item_id=item_id
+                id=player_item_id
             ).aggregate(total=models.Sum('count'))['total'] or 0
             
             if total_count < count:
@@ -1890,7 +1943,7 @@ class PlayerItem(models.Model):
             # 步骤2: 批量获取并锁定相关记录
             items_to_process = list(cls.objects.filter(
                 player=player,
-                item_id=item_id
+                id=player_item_id
             ).select_for_update())
             
             # 步骤3: 内存中计算处理方案

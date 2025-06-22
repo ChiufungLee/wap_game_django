@@ -128,7 +128,7 @@
 {% elif op_action == 'detail_skill' %}
 	<p>【技能详情】</p>
 
-		<p>名称：{{ skill.skill }}</p>
+		<p>名称：{{ skill.skill.name }}</p>
 		<p>等级：{{ skill.rank_display }}</p>
 		<p>经验：{{ skill.current_xp }}/{{skill.max_xp}}</p>
 		<p>攻击：{{ skill.attack }}</p>
@@ -139,21 +139,36 @@
 
 {% elif op_action == 'detail_item' %}
 	<p>【物品详情】</p>
-
-		<p>名称：{{ playeritem.item.name }}</p>
-		<p>描述：{{ playeritem.description }}</p>
-		<p>负重：{{ playeritem.item.weight }}</p>
-		<p>攻击：{{ playeritem.attack }}</p>
-		<p>防御：{{ playeritem.defense }}</p>
-		<p>灵魂力：{{ playeritem.linghunli }}</p>
-		<p>斗气：{{ skill.douqi|safe }}</p>
-
+		{% if has_item %}
+			<p>名称：{{ playeritem.item.name }}</p>
+			<p>描述：{{ playeritem.item.description }}</p>
+			<p>负重：{{ playeritem.item.weight }}</p>
+			{% if playeritem.attack %}	<p>攻击：{{ playeritem.attack }}</p>	{% else %}{% endif %}
+			{% if playeritem.hp %}		<p>生命：{{ playeritem.hp }}</p>		{% else %}{% endif %}
+			{% if playeritem.defense %}	<p>防御：{{ playeritem.defense }}</p>	{% else %}{% endif %}
+			{% if playeritem.linghunli %}	<p>灵魂力：{{ playeritem.linghunli }}</p>{% else %}{% endif %}
+		{% else %}
+			<p>名称：{{ item.name }}</p>
+			<p>描述：{{ item.description }}</p>
+			<p>负重：{{ item.weight }}</p>
+			{% if item.attack %}	<p>攻击：{{ item.attack }}</p>	{% else %}{% endif %}
+			{% if item.hp %}		<p>生命：{{ item.hp }}</p>		{% else %}{% endif %}
+			{% if item.defense %}	<p>防御：{{ item.defense }}</p>	{% else %}{% endif %}
+			{% if item.linghunli %}	<p>灵魂力：{{ item.linghunli }}</p>{% else %}{% endif %}
+		{% endif %}
 		{% if himself %}
-			{% if playeritem.is_equipped %}
-			<p>{{unequip_link|safe}}</p>
-			{% else %}
-			<p>{{equip_link|safe}}</p>
-			<p><a href="/wap/?cmd={{drop_encrypted_param}}">丢弃物品</a></p>
+			{% if playeritem.category == 1 %}
+				{% if playeritem.is_equipped %}
+				<p>{{unequip_link|safe}}</p>
+				{% else %}
+				<p>{{equip_link|safe}}</p>
+				<p><a href="/wap/?cmd={{drop_encrypted_param}}">丢弃物品</a></p>
+				{% endif %}
+
+			{% elif playeritem.category == 2 %}
+					<p>数量：{{playeritem.count}}</p>
+					<p>{{use_link|safe}}</p>
+					<p><a href="/wap/?cmd={{drop_encrypted_param}}">丢弃物品</a></p>
 			{% endif %}
 		{% else %}
 		{% endif %}

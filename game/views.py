@@ -1,11 +1,9 @@
 from django.shortcuts import render, redirect, get_object_or_404
 from django.http import JsonResponse
 from django.core.cache import cache
-from .models import User, GamePage, PageComponent, Player, ChatMessage, GameMap, Team, TeamMember, GameMapNPC, GameNPC, GameMapItem, GameObject, \
-PlayerEquipment
-from .models import GameEvent, GameCity, GameMapArea, Gang, GangMember, GangApplication, Skill, PlayerSkill, GameBase, QuickSlot, PlayerItem, Item
+from .models import *
 from .utils.middleware import ParamSecurity
-from .utils.cache_utils import invalidate_map_cache, invalidate_npc_cache, invalidate_player_cache
+from .utils.cache_utils import *
 from .utils.component_renderer import ComponentRenderer
 from django.urls import reverse
 import time
@@ -14,6 +12,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 from django.db.models import Q
 import json
+import random
 from datetime import datetime, timedelta
 from django.db import transaction
 import ujson
@@ -94,16 +93,316 @@ def get_player_skills(player_id):
             'linghunli': skill.linghunli,
             'douqi': skill.douqi,
         })
-    # skills = {
-    #     101: {'id': 101, 'name': '火焰冲击', 'mana_cost': 15, 'damage': 25},
-    #     102: {'id': 102, 'name': '寒冰箭', 'mana_cost': 10, 'damage': 18},
-    #     103: {'id': 103, 'name': '雷霆一击', 'mana_cost': 20, 'damage': 30},
-    #     104: {'id': 104, 'name': '旋风斩', 'mana_cost': 25, 'damage': 35},
-    # }
     
     # 设置缓存（10分钟）
     cache.set(cache_key, skills, 600)
     return skills
+
+def generate_loot(npc_id):
+    """
+    生成怪物掉落物品
+    :return: 物品ID列表
+    """
+    # 优化查询：仅获取掉落概率>0的物品
+    # 获取当前怪物的掉落配置
+    cache_key = f"npc_drops_{npc_id}"
+    drop_list = cache.get(cache_key)
+    
+    if drop_list is None:
+        # 从数据库获取掉落配置
+        drop_list = list(NPCDropList.objects.filter(
+            npc_id=npc_id, 
+            gailv__gt=0
+        ).values('item_id', 'gailv',  'count'))
+        
+        # 缓存10分钟
+        cache.set(cache_key, drop_list, 600)
+
+    # drop_list = NPCDropList.objects.filter(
+    #     npc_id=npc_id, 
+    #     gailv__gt=0
+    # ).select_related('item').only('item_id', 'gailv')
+    
+    loot = {}
+    for drop in drop_list:
+        # 根据概率决定是否掉落
+        if random.randint(1, 100) <= drop['gailv']:
+            # 随机决定掉落数量
+            max_count = drop.get('max_count',1)
+            quantity = random.randint(1, max_count)
+            
+            # 合并相同物品的数量
+            item_id = drop['item_id']
+            loot[item_id] = loot.get(item_id, 0) + quantity
+    print(f"怪物 {npc_id} 掉落物品: {loot}")
+    # print(loot)
+    return loot
+
+
+def get_player_combat_stats(player_id):
+    """获取玩家战斗属性（基础+装备+技能），使用缓存优化"""
+    key = f"player_combat_{player_id}"
+    stats = cache.get(key)
+    
+    if not stats:
+        player = Player.objects.get(id=player_id)
+        # 基础属性
+        stats = player.total_attributes()
+        
+        # 获取玩家技能（使用缓存函数）
+        skills = get_player_skills(player_id)
+        
+        # 叠加技能属性
+        for skill in skills:
+            stats['min_attack'] += skill['attack']
+            stats['max_attack'] += skill['attack']
+            stats['min_defense'] += skill['defense']
+            stats['max_defense'] += skill['defense']
+            # 添加其他技能属性（如灵魂力、斗气等）
+            stats['linghunli'] += skill.get('linghunli', 0)
+
+        # 缓存30分钟
+        cache.set(key, stats, 1800)
+    
+    return stats
+
+def attack_monster(player_id, npc_id, skill_id=None):
+    """
+    核心攻击逻辑
+    :param player_id: 玩家ID
+    :param npc_id: 怪物ID
+    :param skill_id: 可选技能ID
+    :return: (是否击杀, 玩家伤害, 怪物伤害, 怪物剩余血量, 玩家剩余血量, 玩家是否死亡)
+    """
+    # 获取怪物和玩家信息
+    monster = GameNPC.objects.only('hp', 'attack', 'defense', 'is_boss', 'exp_reward', 'gold_reward').get(id=npc_id)
+    player_stats = get_player_combat_stats(player_id)
+    player = Player.objects.get(id=player_id)  # 获取玩家对象
+    
+    # 应用技能效果
+    skill_name = None
+    if skill_id:
+        skills = get_player_skills(player_id)
+        selected_skill = next((s for s in skills if s['id'] == skill_id), None)
+        
+        if selected_skill:
+            # 应用技能额外加成
+            attack_bonus = selected_skill.get('skill_attack_bonus', 0)
+            player_stats['min_attack'] += attack_bonus
+            player_stats['max_attack'] += attack_bonus
+            skill_name = selected_skill['name']
+            
+            # 消耗资源（如灵魂力）
+            linghunli_cost = selected_skill.get('linghunli', 0)
+            player_stats['linghunli'] -= linghunli_cost
+            player.linghunli = max(0, player.linghunli - linghunli_cost)
+    
+    # 计算玩家攻击伤害
+    player_attack = random.randint(player_stats['min_attack'], player_stats['max_attack'])
+    defense = monster.defense
+    player_damage = max(1, player_attack - defense)  # 至少造成1点伤害
+    
+    # 计算怪物反击伤害
+    monster_attack = monster.attack
+    player_defense = random.randint(player_stats['min_defense'], player_stats['max_defense'])
+    monster_damage = max(1, monster_attack - player_defense)
+    
+    # 应用伤害到玩家
+    player.current_hp = max(0, player.current_hp - monster_damage)
+    
+    # 检查玩家是否死亡
+    player_died = player.current_hp <= 0
+    
+    # 处理玩家死亡
+    if player_died:
+        # 传送玩家到安全区（地图ID=1）
+        player.map_id = 5
+        
+        # 恢复部分生命值（例如恢复50%最大生命值）
+        recovered_hp = int(player.max_hp * 0.2)
+        player.current_hp = recovered_hp
+        
+        # 设置死亡状态
+        player_died = True
+    else:
+        # 如果玩家没有死亡，保存状态
+        player.save()
+    
+    # 处理不同怪物类型（只有在玩家没有死亡时才继续攻击）
+    is_killed = False
+    new_hp = monster.hp  # 默认值
+    
+    if not player_died:
+        if monster.is_boss:
+            # BOSS共享血条
+            new_hp = update_boss_hp(npc_id, player_damage)
+            is_killed = (new_hp <= 0)
+            
+            if is_killed:
+                # BOSS击杀处理
+                reward_info = handle_kill_reward(player_id, monster)
+                cache.delete(f"boss_hp_{npc_id}")  # 清除BOSS缓存
+        else:
+            # 普通怪物独立血条（临时缓存）
+            hp_key = f"monster_{npc_id}_{player_id}"
+            current_hp = cache.get_or_set(hp_key, monster.hp, 300)  # 5分钟缓存
+            new_hp = max(0, current_hp - player_damage)
+            is_killed = (new_hp <= 0)
+            cache.set(hp_key, new_hp, 300)
+            
+            if is_killed:
+                # 普通怪物击杀处理
+                reward_info = handle_kill_reward(player_id, monster)
+                print(reward_info)
+                cache.delete(hp_key)
+    
+    # 如果玩家死亡，保存状态（包含传送和恢复后的状态）
+    if player_died:
+        player.save()
+    
+    return {
+        'killed': is_killed,
+        'player_damage': player_damage,
+        'monster_damage': monster_damage,
+        'remaining_hp': new_hp,
+        'player_current_hp': player.current_hp,
+        'skill_used': skill_name,
+        'player_died': player_died,
+        'reward_info': reward_info if is_killed else None
+    }
+
+def handle_kill_reward(player_id, monster):
+    """处理击杀奖励并返回奖励信息"""
+    player = Player.objects.get(id=player_id)
+    
+    # 基础奖励
+    exp_reward = monster.exp_reward
+    gold_reward = monster.gold_reward
+    
+    player.current_exp += exp_reward
+    player.money += gold_reward
+    
+    # 物品掉落
+    loot_items = generate_loot(monster.id)
+    loot_info = []
+    
+    if loot_items:
+        # 简化的背包添加逻辑
+        # for item_id in loot_items:
+        #     item = Item.objects.get(id=item_id)
+        #     loot_info.append({
+        #         'id': item.id,
+        #         'name': item.name,
+        #         'quantity': 1
+        #     })
+        #     player.add_to_bag(item_id)
+            # 获取玩家当前位置
+        player_location = player.map_id
+
+                # 创建地图物品实例 - 每个物品只创建一个实例
+        for item_id, quantity in loot_items.items():
+            item = Item.objects.get(id=item_id)
+            
+            # 创建单个地图物品实例，数量为总数量
+            GameMapItem.objects.create(
+                item_id=item_id,
+                map_id=player_location,
+                count=quantity,  # 关键：这里设置总数量
+                expire_time=timezone.now() + timedelta(minutes=30)
+            )    
+            loot_info.append({
+                'id': item.id,
+                'name': item.name,
+                'quantity': quantity
+            })
+    player.save()
+    
+    # 返回奖励信息
+    return {
+        'exp': exp_reward,
+        'gold': gold_reward,
+        'loot': loot_info
+    }
+
+# 获取并缓存怪物掉落信息
+def get_npc_info(npc_id):
+    """
+    获取NPC信息（带缓存）
+    """
+    cache_key = f"npc_{npc_id}_info"
+    cached_info = cache.get(cache_key)
+    
+    if cached_info:
+        return cached_info
+    
+    npc = GameNPC.objects.only(
+        'name', 'npc_type', 'level', 'description', 
+        'hp', 'attack', 'defense', 'exp_reward', 'gold_reward',
+        'dialogue', 'shop_items', 'is_boss'
+    ).get(id=npc_id)
+    
+    # 如果是怪物，获取掉落信息
+    drop_info = None
+    if npc.npc_type == 'monster':
+        drop_info = get_npc_drop_info(npc_id)
+    
+    npc_info = {
+        'id': npc.id,
+        'name': npc.name,
+        'type': npc.npc_type,
+        'level': npc.level,
+        'description': npc.description,
+        'hp': npc.hp,
+        'attack': npc.attack,
+        'defense': npc.defense,
+        'exp_reward': npc.exp_reward,
+        'gold_reward': npc.gold_reward,
+        'dialogue': npc.dialogue,
+        'shop_items': npc.shop_items,
+        'is_boss': npc.is_boss,
+        'drop_info': drop_info
+    }
+    
+    # 设置缓存（1小时）
+    cache.set(cache_key, npc_info, 3600)
+    return npc_info
+
+def get_npc_drop_info(npc_id):
+    """
+    获取NPC掉落信息（带缓存）
+    """
+    cache_key = f"npc_drop_info_{npc_id}"
+    cached_info = cache.get(cache_key)
+    
+    if cached_info:
+        return cached_info
+    
+    # 获取最新版本的掉落配置
+    drop_list = NPCDropList.objects.filter(
+        npc_id=npc_id, 
+        gailv__gt=0
+    ).select_related('item').values(
+        'item_id', 'gailv', 'count', 'item__name'
+    )
+
+    drop_info = []
+    for drop in drop_list:
+        drop_info.append({
+            'item_id': drop['item_id'],
+            'item_name': drop['item__name'],
+            'gailv': drop['gailv'],
+            'count': drop.get('count', 1),
+            # 'item_params': ParamSecurity.generate_param(
+            #     entity_type="item", 
+            #     sub_action="detail_item", 
+            #     params={'item_id':drop['item_id']}, 
+            #     action="item"
+            # ),
+        })
+    
+    # 设置缓存（24小时）
+    cache.set(cache_key, drop_info, 86400)
+    return drop_info
 
 def get_map_context(map_id, player_id=None):
     """
@@ -145,20 +444,17 @@ def get_map_context(map_id, player_id=None):
         else:
             pass
         if adj_map:
-            cmd_params = ParamSecurity.generate_param(entity_type="wap", sub_action="none", params={"map_id":adj_map.id}, action="wap"),
+            cmd_params = ParamSecurity.generate_param(entity_type="wap", sub_action="none", params={"map_id":adj_map.id}, action="wap")
             exits[direction] = {
                 'id': adj_map.id,
                 'name': adj_map.name,
-                'cmd_params':cmd_params[0]
+                'cmd_params':cmd_params
 
             }
             
             direction_link = '<a href="/wap/?cmd={}">{}</a>'.format(cmd_params,adj_map.name)
             direction_exits.append(direction_link)
 
-        print("d#################irection")
-        print(adj_map)
-        print("d#################irection")
 
     npc_instances = GameMapNPC.objects.filter(
         map_id=map_id
@@ -179,34 +475,46 @@ def get_map_context(map_id, player_id=None):
         npc = npc_map.get(instance.npc_id)
         if not npc:
             continue
-            
+
+        # 获取怪物的掉落信息（如果是怪物类型）
+        # drop_info = None
+        # if npc.npc_type == 'monster':
+        #     drop_info = get_npc_drop_info(npc.id)
+        
+        cmd_params = ParamSecurity.generate_param(
+            entity_type="gamenpc", 
+            sub_action="detail_npc", 
+            params={"npc_id":npc.id}, 
+            action="gamenpc"
+        )
+
         if npc.npc_type == 'monster':
-            cmd_params = ParamSecurity.generate_param(entity_type="gamenpc", sub_action="attack", params={"npc_id":npc.id}, action="wap"),
 
             for i in range(instance.count):
                 monsters.append({
                 'id': npc.id,
                 'name': npc.name,
-                'level': npc.level,
-                'count': instance.count,
-                'cmd_params': cmd_params[0],
-                'hp': npc.hp,
-                'level': npc.level,
-                'attack': npc.attack,
-                'defense': npc.defense,
-                'exp_reward': npc.exp_reward,
-                'gold_reward': npc.gold_reward,
+                'type': npc.npc_type,
+                # 'level': npc.level,
+                # 'count': instance.count,
+                'cmd_params': cmd_params,
+                # 'hp': npc.hp,
+                # 'level': npc.level,
+                # 'attack': npc.attack,
+                # 'defense': npc.defense,
+                # 'exp_reward': npc.exp_reward,
+                # 'gold_reward': npc.gold_reward,
+                # 'drop_info': drop_info  
                 
             })
         else:
-            cmd_params = ParamSecurity.generate_param(entity_type="gamenpc", sub_action="npc", params={"npc_id":npc.id}, action="wap"),
             npcs.append({
                 'id': npc.id,
                 'name': npc.name,
                 'type': npc.npc_type,
-                'description': npc.description,
-                'dialogue': npc.dialogue,
-                'cmd_params': cmd_params[0]
+                # 'description': npc.description,
+                # 'dialogue': npc.dialogue,
+                'cmd_params': cmd_params
             })
     
     # 获取地图物品（排除已拾取和过期的）
@@ -220,12 +528,12 @@ def get_map_context(map_id, player_id=None):
     
     items = []
     for item in item_list:
-        cmd_params = ParamSecurity.generate_param(entity_type="item", sub_action="get_item", params={"map_item_id":item.id,"item_id":item.item.id}, action="wap"),
+        cmd_params = ParamSecurity.generate_param(entity_type="item", sub_action="get_item", params={"map_item_id":item.id,"item_id":item.item.id}, action="item")
         items.append({
                 'id': item.item.id,
                 'name': item.item.name,
-                'cmd_params': cmd_params[0],
-                
+                'cmd_params': cmd_params,
+                'count': item.count
             })
     # 获取地图玩家（排除自己）
     players_query = Player.objects.filter(map_id=map_id)
@@ -240,12 +548,12 @@ def get_map_context(map_id, player_id=None):
         if not player:
             continue
         print(player)
-        cmd_params = ParamSecurity.generate_param(entity_type="player", sub_action="detail_player", params={"player_id":player.id}, action="wap"),
+        cmd_params = ParamSecurity.generate_param(entity_type="player", sub_action="detail_player", params={"player_id":player.id}, action="player")
         players.append({
                 'id': player.id,
                 'name': player.name,
-                'cmd_params': cmd_params[0],
-                
+                'cmd_params': cmd_params,
+                'level': player.level
             })
     
     # 构建上下文
@@ -314,7 +622,7 @@ def pick_item(player, map_item_id):
         logger.exception(f"拾取物品异常：{e}")
         return False, "拾取物品失败，请稍后再试"
 
-def drop_item(player, item_id):
+def drop_item(player, player_item_id, item_id):
     """
     玩家丢弃物品
     :param player: 玩家对象
@@ -323,7 +631,7 @@ def drop_item(player, item_id):
     # 验证玩家是否拥有该物品
     if not PlayerItem.objects.filter(
         player=player,
-        item_id=item_id
+        id=player_item_id
     ).exists():
         return False
     
@@ -331,7 +639,7 @@ def drop_item(player, item_id):
     # 只包装核心操作在事务中
         with transaction.atomic():
             # 调用优化后的移除方法
-            success = PlayerItem.remove_item(player, item_id, count=1)
+            success = PlayerItem.remove_item(player, player_item_id, count=1)
             
             if not success:
                 return False
@@ -366,7 +674,7 @@ def generate_action_links(map_id, player_id, context):
                 'player_id': player_id,
                 'map_id': map_id
             },
-            action="item_action"
+            action="item"
         )
         links[f'pick_item_{item.id}'] = encrypted_cmd
     
@@ -380,7 +688,7 @@ def generate_action_links(map_id, player_id, context):
                 'player_id': player_id,
                 'map_id': map_id
             },
-            action="npc_action"
+            action="npc"
         )
         links[f'interact_npc_{npc["id"]}'] = encrypted_cmd
     
@@ -394,7 +702,7 @@ def generate_action_links(map_id, player_id, context):
                 'player_id': player_id,
                 'map_id': map_id
             },
-            action="combat_action"
+            action="monster"
         )
         links[f'attack_{monster["id"]}'] = encrypted_cmd
     
@@ -406,7 +714,7 @@ def generate_action_links(map_id, player_id, context):
             'player_id': player_id,
             'map_id': map_id
         },
-        action="map_action"
+        action="map"
     )
     links['refresh'] = encrypted_cmd
     
@@ -417,7 +725,7 @@ def generate_action_links(map_id, player_id, context):
         params={
             'player_id': player_id
         },
-        action="shop_action"
+        action="shop"
     )
     links['shop'] = encrypted_cmd
     
@@ -428,7 +736,7 @@ def generate_action_links(map_id, player_id, context):
         params={
             'player_id': player_id
         },
-        action="mission_action"
+        action="mission"
     )
     links['mission'] = encrypted_cmd
     
@@ -440,7 +748,7 @@ def generate_action_links(map_id, player_id, context):
             'player_id': player_id,
             'map_id': map_id
         },
-        action="item_action"
+        action="item"
     )
     links['show_more_items'] = encrypted_cmd
     
@@ -458,45 +766,47 @@ def generate_action_links(map_id, player_id, context):
     
     return links
 
+        # 生成分页导航的加密参数
+def generate_page_param(entity, type_value, page_num,):
+    object_type = entity + '_type'
+    list_object = 'list_' + entity
+    page_params = {
+        object_type: type_value,
+        "page": page_num,
+    }
 
-def equip(player_id, player_item_id):
-    """装备物品"""
-    player = Player.objects.select_for_update().get(id=player_id)
-    player_item = PlayerItem.objects.select_related('item').select_for_update().get(
-        id=player_item_id, 
-        player=player,
-        is_equipped=False
+    return ParamSecurity.generate_param(
+        entity_type=entity,
+        sub_action=list_object,
+        params=page_params,
+        action=entity
     )
+
+def use_heal_item(player_item, player):
+    """使用恢复类药品"""
+    # item = player_item.item
+    heal_amount = player_item.hp
     
-    # 验证是否为装备
-    if player_item.item.category != 1:
-        raise ValueError("只能装备武器/防具")
+    need_hp = player.max_hp - player.current_hp
+    if need_hp == 0:
+        return False, "生命值已满，无需使用"
+
+    if need_hp < heal_amount:
+        add_hp = need_hp
+    else:
+        add_hp = heal_amount
+
+    # 更新玩家生命值
+    updated = Player.objects.filter(
+        id=player.id,
+    ).update(
+        current_hp=player.current_hp + add_hp
+        )
     
-    position = player_item.item.equipment_post
-    
-    # 检查槽位是否被占用
-    existing_equipment = PlayerEquipment.objects.filter(
-        player=player, 
-        position=position
-    ).first()
-    
-    # 卸载已装备物品（如果有）
-    if existing_equipment:
-        existing_item = existing_equipment.item
-        existing_item.is_equipped = False
-        existing_item.save(update_fields=['is_equipped'])
-        existing_equipment.delete()
-    
-    # 装备新物品
-    PlayerEquipment.objects.create(
-        player=player,
-        position=position,
-        item=player_item
-    )
-    player_item.is_equipped = True
-    player_item.save(update_fields=['is_equipped'])
-    
-    return player.total_attributes
+    player_item.remove_item(player, player_item.id, count=1)
+    # 消耗物品
+
+    return True, f"成功恢复生命值{add_hp}点"
 
 
 def equip_item(player, player_item_id):
@@ -536,7 +846,8 @@ def equip_item(player, player_item_id):
             )
             player_item.is_equipped = True
             player_item.save(update_fields=['is_equipped'])
-            
+            cache.delete(f'player_attrs_{player.id}')
+            cache.delete(f'player_combat_{player.id}')
             return True, f"成功装备 {player_item.item.name}"
     
     except PlayerItem.DoesNotExist:
@@ -565,6 +876,7 @@ def unequip_item(player, position):
             # 删除装备槽记录
             equipment.delete()
             cache.delete(f'player_attrs_{player.id}')
+            cache.delete(f'player_combat_{player.id}')
             return True, f"成功卸下 {player_item.item.name}"
     
     except PlayerEquipment.DoesNotExist:
@@ -596,7 +908,7 @@ def get_equipped_lists(player):
                 entity_type='item',
                 sub_action='detail_item',
                 params = {'player_item_id':e.item_id,'player_id':player.id},
-                action='wap'
+                action='item'
             ),
         } for e in equipment
     ]
@@ -734,7 +1046,7 @@ def player_handler(request, params, sub_action):
             'wap_encrypted_param': ParamSecurity.generate_param(
                 entity_type='wap',
                 sub_action='none',
-                params=1,
+                params=params,
                 action='wap'
             ),
         })
@@ -772,16 +1084,6 @@ def player_handler(request, params, sub_action):
         })
     else:
         pass
-
-
-
-
-
-    
-    
-    
-
-
 
 
 # Create your views here.
@@ -851,6 +1153,7 @@ def wap(request):
         player_id = request.session["player_id"]
         # 从数据库重新获取玩家对象
         player = Player.objects.get(id=player_id)
+        print(player.total_attributes())
         
         if player.is_online == False:
             player.update_activity()
@@ -858,7 +1161,7 @@ def wap(request):
         messages.error(request, "你已长时间未操作，请重新登录！")
         return redirect(reverse('error'))
     
-    print(player.total_attributes())
+    # print(player.total_attributes())
 
     new_map_id = params.get("map_id")
     # # 记录旧地图ID
@@ -913,18 +1216,8 @@ def wap(request):
     ).select_related('item').only(
         'id', 'item__id', 'item__name', 'count'
     )[:MAX_ITEMS_DISPLAY]
-    print("&&&&&&&&&&&&&&&")
     print(test_items)
-    print("&&&&&&&&&&&&&&&")
-    # for npc in context.get('npcs', []):
-    #     key = f"interact_npc_{npc['id']}"
-    #     npc['interact_link'] = action_links.get(key, '')
-    #     print(npc)
-    # print(context['direction_links'].items)
-    # print(context['exits'])
-    # for i in context['direction_links'].items:
-    #     print(i)
-    #     print("sss")
+
     exits = context['exits']
     npcs = context.get('npcs', [])
     items = context['items']
@@ -1025,8 +1318,8 @@ def wap(request):
             'chat_encrypted_param': ParamSecurity.generate_param(entity_type='chat',sub_action='list_chat',params = {'chat_type':2},action='chat'),
             'gang_encrypted_param': ParamSecurity.generate_param(entity_type='gang',sub_action='list_gang',params = {'gang_type':1},action='gang'),
             'team_encrypted_param': ParamSecurity.generate_param(entity_type='team',sub_action='list_team',params = {'team_type':1},action='team'),
-            'skill_encrypted_param': ParamSecurity.generate_param(entity_type='skill',sub_action='list_skill',params = {'team_type':1},action='skill'),
-            'item_encrypted_param': ParamSecurity.generate_param(entity_type='item',sub_action='list_item',params = {'item_type':1},action='skill'),
+            'skill_encrypted_param': ParamSecurity.generate_param(entity_type='skill',sub_action='list_skill',params = {'skill_id':1},action='skill'),
+            'item_encrypted_param': ParamSecurity.generate_param(entity_type='item',sub_action='list_item',params = {'item_type':1},action='item'),
         })
     elif entity == 'wap' and sub_action == 'move':
          return movemap_handler(request, params, sub_action)
@@ -1093,29 +1386,66 @@ def item_handler(request, params, sub_action):
         wap_url = "/wap/?cmd=" + wap_encrypted_param
         return redirect(wap_url)
     elif sub_action == "list_item":
-        item_type = 1
-        # playeritems = PlayerItem.objects.filter(player=player)
-        playeritems = PlayerItem.objects.filter(
+
+
+        item_type = params.get("item_type",1)
+
+        page = int(params.get("page", 1))
+        PAGE_SIZE = 10  # 每页消息数量
+
+        # 基础查询
+        base_query = PlayerItem.objects.filter(
             player_id=player.id,
-            category=item_type  # 直接使用PlayerItem的索引
+            category=item_type
         ).select_related('item').only(
             'id', 'count', 'is_bound', 'is_equipped',
             'item__id', 'item__name', 'item__category'
         )
+
+        
+        # 计算分页
+        total_count = base_query.count()
+        total_pages = (total_count + PAGE_SIZE - 1) // PAGE_SIZE
+        
+        # 确保页码在有效范围内
+        page = max(1, min(page, total_pages))
+        
+        # 获取当前页数据
+        offset = (page - 1) * PAGE_SIZE
+        item_lists = base_query.order_by('-id')[offset:offset + PAGE_SIZE]
+        
+        start_index = (page - 1) * PAGE_SIZE
+
+        # 格式化消息
         item_list = []
-        for i in playeritems:
+        for i in item_lists:
             print(i.item.name)
             item_params = ParamSecurity.generate_param(
                 entity_type='item',
                 sub_action='detail_item',
-                params = {'item_id':i.item_id,'player_id':player.id},
-                action='wap'
+                params = {'item_id':i.item_id,'player_id':player.id,'player_item_id':i.id},
+                action='item'
             ),
             html_context = '<a href="/wap/?cmd={}">{}</a> x{}'.format(item_params[0],i.item.name,i.count)
             item_list.append(html_context)
-
-
-
+        
+    
+        # 创建分页导航
+        pagination = []
+        if page > 1:
+            shouye_params = generate_page_param(entity='item', type_value=item_type, page_num=1)
+            shangyiye_params = generate_page_param(entity='item', type_value=item_type, page_num=(-1))
+            pagination.append(f'<a href="/wap/?cmd={shouye_params}">首页</a>')
+            pagination.append(f'<a href="/wap/?cmd={shangyiye_params}">上一页</a>')
+        
+        # 显示当前页和总页数
+        pagination.append(f'第{page}/{total_pages}页')
+        
+        if page < total_pages:
+            xiayiye_params = generate_page_param(entity='item', type_value=item_type, page_num=page+1)
+            weiye_params = generate_page_param(entity='item', type_value=item_type, page_num=total_pages)
+            pagination.append(f'<a href="/wap/?cmd={xiayiye_params}">下一页</a>')
+            pagination.append(f'<a href="/wap/?cmd={weiye_params}">尾页</a>')
 
         return render(request, 'object_rank.html',{
             'item_list': item_list,
@@ -1126,58 +1456,132 @@ def item_handler(request, params, sub_action):
                 params = {'player_id':player.id},
                 action='wap'
             ),
+            'pagination':" ".join(pagination),
+            'start_index': start_index,
+            'item_type': item_type,
+            'zhuangbei_params': ParamSecurity.generate_param(
+                entity_type='item',
+                sub_action='list_item',
+                params = {'item_type':1},
+                action='item'
+            ),
+            'yaopin_params': ParamSecurity.generate_param(
+                entity_type='item',
+                sub_action='list_item',
+                params = {'item_type':2},
+                action='item'
+            ),
+            'wupin_params': ParamSecurity.generate_param(
+                entity_type='item',
+                sub_action='list_item',
+                params = {'item_type':3},
+                action='item'
+            ),
+            'qita_params': ParamSecurity.generate_param(
+                entity_type='item',
+                sub_action='list_item',
+                params = {'item_type':6},
+                action='item'
+            ),
+            'now_rongliang': player.get_bag_weight(),
+            'max_rongliang': player.bag_capacity,
+            'money': player.money
         })
+
+
+
+
+
+
     elif sub_action == "detail_item":
         item_id = params.get("item_id")
         player_id = params.get("player_id")
+        player_item_id = params.get("player_item_id")
+        action_link = ''
         print(item_id)
         print(player_id)
         print("#############detail########################")
-        playeritem = PlayerItem.objects.filter(
-            player_id=player_id,
-            item_id=item_id  
-        ).select_related('item').first()
-        print(playeritem)
-        if playeritem.category == 1:
-            equip_params = ParamSecurity.generate_param(
-                entity_type='item',
-                sub_action='equip_item',
-                params = {'player_id':player.id,'player_item_id':playeritem.id,'item_id':playeritem.item_id},
-                action='wap'
-            ),
-            action_link = '<a href="/wap/?cmd={}">穿戴</a>'.format(equip_params[0])
+        has_item = False
+        if player_item_id:
+            playeritem = PlayerItem.objects.filter(
+                player_id=player_id,
+                id=player_item_id  
+            ).select_related('item').first()
+            unequip_link = None
+            equip_link = None
+            if playeritem.category == 1:
+                equip_params = ParamSecurity.generate_param(
+                    entity_type='item',
+                    sub_action='equip_item',
+                    params = {'player_id':player.id,'player_item_id':playeritem.id,'item_id':playeritem.item_id},
+                    action='item'
+                ),
+                chuandai_link = '<a href="/wap/?cmd={}">穿戴</a>'.format(equip_params[0])
+                if playeritem.is_equipped == 1:
+                    unequip_params = ParamSecurity.generate_param(
+                        entity_type='item',
+                        sub_action='unequip_item',
+                        params = {'player_id':player.id, 'item_id':playeritem.item_id, 'position':playeritem.equipment_post},
+                        action='item'
+                    ),
+                    unequip_link = '<a href="/wap/?cmd={}">卸下</a>'.format(unequip_params[0])
+                
 
-        if playeritem.is_equipped == 1:
-            unequip_params = ParamSecurity.generate_param(
-                entity_type='item',
-                sub_action='unequip_item',
-                params = {'player_id':player.id, 'item_id':playeritem.item_id, 'position':playeritem.equipment_post},
-                action='wap'
-            ),
-            action_link = '<a href="/wap/?cmd={}">卸下</a>'.format(unequip_params[0])
-        if player_id == player.id:
+            elif playeritem.category == 2:
+                use_params = ParamSecurity.generate_param(
+                    entity_type='item',
+                    sub_action='use_item',
+                    params = {'player_id':player.id,'player_item_id':playeritem.id,'item_id':playeritem.item_id},
+                    action='item'
+                ),
+                action_link = '<a href="/wap/?cmd={}">使用</a>'.format(use_params[0])
+            has_item = True
             himself = True
+            return render(request, 'gang_detail.html',{
+                'playeritem': playeritem,
+                'op_action': 'detail_item',
+                'equip_link': equip_link,
+                'unequip_link': unequip_link,
+                'use_link':action_link,
+                'himself': himself,
+                'has_item': has_item,
+                'wap_encrypted_param': ParamSecurity.generate_param(
+                    entity_type='wap',
+                    sub_action='none',
+                    params = {'player_id':player.id},
+                    action='wap'
+                ),
+                'drop_encrypted_param': ParamSecurity.generate_param(
+                    entity_type='item',
+                    sub_action='drop_item',
+                    params = {'player_item_id':playeritem.id,'item_id':playeritem.item.id},
+                    action='item'
+                ),
+            })
         else:
+            item = Item.objects.filter(
+                id=item_id  
+            ).first()
             himself = False
-        return render(request, 'gang_detail.html',{
-            'playeritem': playeritem,
-            'op_action': 'detail_item',
-            'equip_link': action_link,
-            'unequip_link': action_link,
-            'himself': himself,
-            'wap_encrypted_param': ParamSecurity.generate_param(
-                entity_type='wap',
-                sub_action='none',
-                params = {'player_id':player.id},
-                action='wap'
-            ),
-            'drop_encrypted_param': ParamSecurity.generate_param(
-                entity_type='item',
-                sub_action='drop_item',
-                params = {'item_id':playeritem.item_id},
-                action='wap'
-            ),
-        })
+            return render(request, 'gang_detail.html',{
+                'item': item,
+                'op_action': 'detail_item',
+                'equip_link': None,
+                'unequip_link': None,
+                'use_link':None,
+                'himself': himself,
+                'has_item': has_item,
+                'wap_encrypted_param': ParamSecurity.generate_param(
+                    entity_type='wap',
+                    sub_action='none',
+                    params = {'player_id':player.id},
+                    action='wap'
+                ),
+                'drop_encrypted_param': None,
+            })
+
+
+
     elif sub_action == "equip_item":
         player_item_id = params.get("player_item_id")
         item_id = params.get("item_id")
@@ -1189,21 +1593,61 @@ def item_handler(request, params, sub_action):
         wap_encrypted_param = ParamSecurity.generate_param(
             entity_type="item", 
             sub_action="detail_item", 
-            params={'item_id':item_id,'player_id':player.id}, 
-            action="wap"
+            params={'item_id':item_id,'player_item_id':player_item_id, 'player_id':player.id}, 
+            action="item"
         )
         equip_list = get_equipped_lists(player)
         print(equip_list)
         wap_url = "/wap/?cmd=" + wap_encrypted_param
         return redirect(wap_url)
 
-    
+    elif sub_action == "use_item":
+        player_item_id = params.get("player_item_id")
+        item_id = params.get("item_id")
+        # player_id = params.get("player_id")
+
+
+
+        # 判断有没有物品
+        player_item = PlayerItem.objects.filter(player=player,id=player_item_id).first()
+        # if player_item is None:
+            ## 没有物品
+        success, message = use_heal_item(player_item, player)
+        if player_item.count > 1:
+            wap_encrypted_param = ParamSecurity.generate_param(
+                entity_type="item", 
+                sub_action="detail_item", 
+                params={'item_id':item_id,'player_item_id':player_item_id, 'player_id':player.id}, 
+                action="item"
+            )
+            messages.success(request, message)
+        else:
+            if success:
+                messages.success(request, message)
+                wap_encrypted_param = ParamSecurity.generate_param(
+                    entity_type="item", 
+                    sub_action="list_item", 
+                    params={'item_type':1}, 
+                    action="item"
+                )  
+            else:
+                messages.success(request, message)
+                wap_encrypted_param = ParamSecurity.generate_param(
+                    entity_type="item", 
+                    sub_action="detail_item", 
+                    params={'item_id':item_id,'player_item_id':player_item_id, 'player_id':player.id}, 
+                    action="item"
+                )
+        wap_url = "/wap/?cmd=" + wap_encrypted_param
+        return redirect(wap_url)
+
+
     elif sub_action == "unequip_item":
         '''卸下装备'''
         position = params.get("position")
         player_item_id = params.get("player_item_id")
         item_id = params.get("item_id")
-        print("卸妆啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊")
+
         print(item_id)
         success, message = unequip_item(player,position)
         if success:
@@ -1214,7 +1658,7 @@ def item_handler(request, params, sub_action):
             entity_type="item", 
             sub_action="detail_item", 
             params={'item_id':item_id,'player_id':player.id}, 
-            action="wap"
+            action="item"
         )
         equip_list = get_equipped_lists(player)
         print(equip_list)
@@ -1223,15 +1667,16 @@ def item_handler(request, params, sub_action):
 
     elif sub_action == "drop_item":
         item_id = params.get("item_id")
+        player_item_id = params.get("player_item_id")
         # item = Item.objects.get(id=item_id)
-        drop_item(player,item_id=item_id)
+        drop_item(player,player_item_id=player_item_id,item_id=item_id)
 
         messages.success(request, "已丢弃物品")
         wap_encrypted_param = ParamSecurity.generate_param(
             entity_type="item", 
             sub_action="list_item", 
             params={'player_id':player.id}, 
-            action="wap"
+            action="item"
         )
         print("捡到了aaaaaaaaaaaaaaaaaa")
         wap_url = "/wap/?cmd=" + wap_encrypted_param
@@ -1253,8 +1698,8 @@ def skill_handler(request, params, sub_action):
             skill_encrypted_param = ParamSecurity.generate_param(
                 entity_type='skill',
                 sub_action='detail_skill',
-                params = {'skill_id':skill.id},
-                action='wap'
+                params = {'skill_id':skill.skill.id},
+                action='skill'
             )
             html_context = '<a href="/wap/?cmd={}">{}</a>'.format(skill_encrypted_param,skill.skill)
             # print(html_context)
@@ -1272,9 +1717,9 @@ def skill_handler(request, params, sub_action):
         })
     elif sub_action == 'detail_skill':
         skill_id = params.get("skill_id")
-
+        print("skill id" + str(skill_id))
         skill = PlayerSkill.objects.filter(player=player,skill_id=skill_id).first()
-        
+        print(skill)
         return render(request, 'gang_detail.html',{
             'skill':skill,
             'op_action': 'detail_skill',
@@ -1287,11 +1732,112 @@ def skill_handler(request, params, sub_action):
         })
 
 def attack_handler(request, params, sub_action):
-    npc = 1
-    return render(request, 'monster_attack.html',{
-        'npc':npc,
-        
-    })
+    
+    npc = params.get("npc")
+    print("***********npc*********")
+    print(npc)
+    npc_id = params.get("npc_id")
+    player = request.session.get("player")
+    player_id = player.id
+    skill_id = params.get("skill_id")
+    print("npc_id")
+    print(npc_id)
+
+    slots_data = QuickSlot.get_player_quick_slots(player.id)
+    player_skills = get_player_skills(player.id)
+    print(player_skills)
+
+    for skill in player_skills:
+        cmd_params = ParamSecurity.generate_param(
+            entity_type="attack", 
+            sub_action="attack_monster", 
+            params={"skill_id":skill["id"],"npc_id":npc_id,"npc":npc,}, 
+            action="attack"
+            )
+        skill['cmd_params'] = cmd_params
+
+
+    if sub_action == "attack_monster":
+        try:
+            attack_result = attack_monster(player_id, npc_id, skill_id)
+
+            # 更新session中的玩家状态
+            request.session['player'] = Player.objects.get(id=player_id)
+            
+            # 如果是玩家死亡，重定向到安全区
+            if attack_result['player_died']:
+                messages.error(request, "你竟然被怪物击败了！已被传送到安全区。")
+                
+                # 生成安全区的加密参数
+                safe_area_param = ParamSecurity.generate_param(
+                    entity_type='wap',
+                    sub_action='none',
+                    params={'map_id': 1},
+                    action='wap'
+                )
+                safe_area_url = f"/wap/?cmd={safe_area_param}"
+                return redirect(safe_area_url)
+
+            # 如果是击杀，获取奖励信息
+            reward_info = None
+            if attack_result['killed']:
+                # reward_info = handle_kill_reward(player_id, GameNPC.objects.get(id=npc_id))
+                reward_info = attack_result.get('reward_info')
+            
+            request.session['player'].current_hp = attack_result['player_current_hp']
+
+            print("啥啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊")
+            context = {
+                'npc': npc,
+                'op_action': 'attack_monster',
+                'player': request.session['player'],  # 使用更新后的玩家状态
+                'player_skills': player_skills,
+                'status': 'success',
+                'attack_result': attack_result,
+                'reward_info': reward_info,
+                'wap_encrypted_param': ParamSecurity.generate_param(
+                    entity_type='wap',
+                    sub_action='none',
+                    params={'player_id': player.id},
+                    action='wap'
+                ),
+            }
+
+            return render(request, 'monster_attack.html',context)
+
+        except Exception as e:
+
+            messages.error(request, str(e))
+
+            wap_encrypted_param = ParamSecurity.generate_param(
+                entity_type="attack", 
+                sub_action="attack_monster", 
+                params={"skill_id":skill_id,"npc_id":npc_id,"npc":npc,}, 
+                action="attack"
+            )
+            wap_url = "/wap/?cmd=" + wap_encrypted_param
+            return redirect(wap_url)
+
+
+    elif sub_action == "attack_boss":
+        pass
+    elif sub_action == "attack":
+
+        return render(request, 'monster_attack.html',{
+            'npc':npc,
+            'op_action': 'attack_monster',
+            'player':player,
+            'player_skills': player_skills,
+            'wap_encrypted_param': ParamSecurity.generate_param(
+                    entity_type='wap',
+                    sub_action='none',
+                    params = {'player_id':player.id},
+                    action='wap'
+                ),
+            
+        })
+    else:
+        pass
 
 def gamenpc_handler(request, params, sub_action):
     try:
@@ -1302,12 +1848,12 @@ def gamenpc_handler(request, params, sub_action):
         return redirect(reverse('error'))
 
     # 获取当前地图上下文（从缓存中）
-    context = get_map_context(player.map.id, player.id)
+    # context = get_map_context(player.map.id, player.id)
     
     npc_id = params.get("npc_id")
 
     # 查找NPC
-    npc = next((n for n in context['npcs'] if n['id'] == npc_id), None)
+    # npc = next((n for n in context['npcs'] if n['id'] == npc_id), None)
     #     level = models.IntegerField(default=1, verbose_name="等级")   # 通用属性
     # # map = models.ForeignKey('GameMap', null=True, blank=True, on_delete=models.CASCADE, verbose_name="地图")  # 通用属性
     # # map_id = models.PositiveIntegerField(null=True, blank=True, db_index=True, verbose_name="地图")
@@ -1320,75 +1866,59 @@ def gamenpc_handler(request, params, sub_action):
     # gold_reward = models.IntegerField(default=0, verbose_name="金钱奖励")
     # drop_items = models.JSONField(null=True, blank=True, verbose_name="物品掉落")  # 掉落物品JSON
     # is_boss = models.BooleanField(default=False, verbose_name="是否BOSS") 
-    if not npc:
-        # 如果缓存中没有，从数据库查询（很少发生）
-        try:
-            npc_obj = GameNPC.objects.get(id=npc_id)
-            npc = {
-                'id': npc_obj.id,
-                'name': npc_obj.name,
-                'type': npc_obj.npc_type,
-                'description': npc_obj.description,
-                'dialogue': npc_obj.dialogue,
-                'hp': npc_obj.hp,
-                'level': npc_obj.level,
-                'attack': npc_obj.attack,
-                'defense': npc_obj.defense,
-                'exp_reward': npc_obj.exp_reward,
-                'gold_reward': npc_obj.gold_reward,
-                # 'shop_items': npc_obj.shop_items
-            }
-        except GameNPC.DoesNotExist:
-            return redirect('game:map_view')
-    print(npc["name"])
+    # if not npc:
+    #     # 如果缓存中没有，从数据库查询（很少发生）
+    #     try:
+    #         npc_obj = GameNPC.objects.get(id=npc_id)
 
-    ## 获取快捷键
-    slots_data = QuickSlot.get_player_quick_slots(player.id)
-    player_skills = get_player_skills(player.id)
-    print(player_skills)
+    #         npc = {
+    #             'id': npc_obj.id,
+    #             'name': npc_obj.name,
+    #             'type': npc_obj.npc_type,
+    #             'description': npc_obj.description,
+    #             'dialogue': npc_obj.dialogue,
+    #             'hp': npc_obj.hp,
+    #             'level': npc_obj.level,
+    #             'attack': npc_obj.attack,
+    #             'defense': npc_obj.defense,
+    #             'exp_reward': npc_obj.exp_reward,
+    #             'gold_reward': npc_obj.gold_reward,
+                
+    #         }
+    #     except GameNPC.DoesNotExist:
+    #         return redirect('game:map_view')
+    # print(npc["name"])
+    try:
+        npc = get_npc_info(npc_id)
 
-    # slot_list = []
-    # for slot in slots_data:
-    #     slot_info = {
-    #         'slot_index': slot['slot_index'],
-    #         'type': None,
-    #         'name': "未设置",
-    #         # 'command_data': None,
-    #         'cmd_params': None,
-    #         'skill_id': None,
-    #         'npc_id': npc['id']            
-    #     }
-        
-        # if slot['skill_id']:
-        #     skill = player_skills.get(slot['skill_id'])
-        #     print(skill)
-        #     print("(((((((((((((((())))))))))))))))")
-        #     cmd_params = ParamSecurity.generate_param(entity_type="attack", sub_action="monster", params={"skill_id":skill['name']}, action="wap")
-        #     if skill:
-        #         slot_info.update({
-        #             'type': 'skill',
-        #             'name': skill['name'],
-        #             # 'cmd_params': {
-        #             #     'action': 'use_skill',
-        #             #     'skill_id': skill['id'],
-        #             #     'name': skill['name'],
-        #             #     'mana_cost': skill['mana_cost']
-        #             # },
-        #             'cmd_params': cmd_params,
-        #             'skill_id': skill['id'],
-        #         })
-        
-        # player_skill_list = []
-    for skill in player_skills:
-        cmd_params = ParamSecurity.generate_param(entity_type="attack", sub_action="monster", params={"skill_id":skill['id'],"npc_id":npc['id']}, action="wap")
-        skill['cmd_params'] = cmd_params
-        # print(player_skills)
-        # slot_list.append(slot_info)
+        drop_info = npc["drop_info"]
+        if drop_info:
+            for item in drop_info:
+                full_params = {
+                    'item_id': item['item_id'],
+                    'player_id': player.id,
+                    'player_item_id': None
+                }
+                print(f"item_id{item['item_id']}")
+                print(f"item_id{player.id}")
+                # 保留原始参数，添加玩家ID
+                item['item_params'] = ParamSecurity.generate_param(
+                    entity_type="item", 
+                    sub_action="detail_item", 
+                    params=full_params,
+                    action="item"
+                )
 
+    except GameNPC.DoesNotExist:
+        messages.error(request, "NPC 不存在！")
+        return redirect('game:map_view')
+    print(npc)
+
+    print(drop_info)
     return render(request, 'player_status.html', {
         'npc':npc,
         'op_action': 'npc',
-        'player_skills': player_skills,
+        'drop_info': drop_info,
         'wap_encrypted_param': ParamSecurity.generate_param(
             entity_type='wap',
             sub_action='none',
@@ -1396,10 +1926,10 @@ def gamenpc_handler(request, params, sub_action):
             action='wap'
         ),
         'attack_encrypted_param': ParamSecurity.generate_param(
-            entity_type='gamenpc',
+            entity_type='attack',
             sub_action='attack',
-            params = {'player_id':player.id},
-            action='wap'
+            params = {'player_id':player.id,'npc_id':npc["id"],"npc":npc},
+            action='attack'
         ),
         })
 
@@ -1458,41 +1988,6 @@ def movemap_handler(request, params, sub_action):
     wap_url = "/wap/?cmd=" + wap_encrypted_param
     return redirect(wap_url)
 
-
-    # map = map.get_adjacent_maps()
-    # print(map['west'])
-    # map_lists = []
-
-
-    # if map.north:
-    #     map_lists.append('北: <a href="/wap/?cmd={}">{}</a>'.format(ParamSecurity.generate_param(
-    #             entity_type='wap',
-    #             sub_action='none',
-    #             params=player.id,
-    #             action='wap'
-    #         ), map.north.name))
-    # if map.east:
-    #     map_lists.append('东: <a href="/wap/?cmd={}">{}</a><br>'.format(ParamSecurity.generate_param(
-    #             entity_type='wap',
-    #             sub_action='none',
-    #             params=player.id,
-    #             action='wap'
-    #         ), map.east.name))
-    # if map.south:
-    #     map_lists.append('南: <a href="/wap/?cmd={}">{}</a>'.format(ParamSecurity.generate_param(
-    #             entity_type='wap',
-    #             sub_action='none',
-    #             params=player.id,
-    #             action='wap'
-    #         ), map.south.name))
-    # if map.west:
-    #     map_lists.append('西: <a href="/wap/?cmd={}">{}</a><br>'.format(ParamSecurity.generate_param(
-    #             entity_type='wap',
-    #             sub_action='none',
-    #             params=player.id,
-    #             action='wap'
-    #         ), map.west.name))
-    # print(f"map_lists: {map_lists}")
 
 def team_handler(request, params, sub_action):
 
@@ -1759,19 +2254,8 @@ def team_handler(request, params, sub_action):
 
         
         
-        return redirect(reverse('wap') + f'?cmd={ParamSecurity.generate_param("team", "list_team", {}, action="wap")}')
-        # return render(request, 'object_rank.html', {
-        #     # 'create_param': create_param,
-        #     
-        #     'op_action': 'list_team',
-        #     "wap_encrypted_param": wap_encrypted_param,
-        #     'create_param': create_param,
-        #     # 'gang_list': gang_list,
-        #     'team_list': team_list,
-        #     'is_onteam': is_onteam,
-        #     # 'team':team,
-        #     'player':player
-        # })
+        return redirect(reverse('wap') + f'?cmd={ParamSecurity.generate_param("team", "list_team", {}, action="team")}')
+
 
     elif sub_action == 'join_team':
         team_id = params.get("team_id")
@@ -1842,10 +2326,6 @@ def team_handler(request, params, sub_action):
 
 
     else:
-        # 
-        # 
-        
-        
 
         return render(request, 'object_rank.html', {
             'create_param': create_param,
@@ -1896,12 +2376,6 @@ def gang_handler(request, params, sub_action):
 
 
     if sub_action == 'create_gang':
-        # param_data = request.secure_params.get('cmd')
-        # if not param_data:
-        #     return render_error(request, "参数错误")
-        # entity = param_data['entity']
-        # sub_action = param_data['sub_action']
-        # params = param_data['params']
 
         if request.method == 'POST':
             gang_name = request.POST.get('gang_name').strip()
@@ -2004,19 +2478,7 @@ def gang_handler(request, params, sub_action):
                 params={'player_id':member['id']}, 
                 action="player"
             )
-            # removeteam_encrypted_param = ParamSecurity.generate_param(
-            #     entity_type="team", 
-            #     sub_action="remove_team", 
-            #     params={'player_id':member["id"],'team_id':team.id}, 
-            #     action="team"
-            # )
-            # if team.leader == player: 
-            #     context = '<a href="/wap/?cmd={}">{}</a> [在线] <a href="/wap/?cmd={}">踢出</a>'.format(
-            #         player_encrypted_param,
-            #         member['name'],
-            #         removeteam_encrypted_param,
-            #     )
-            # else:
+
             context = '<a href="/wap/?cmd={}">{}</a>、'.format(
                 player_encrypted_param,
                 member["name"],
@@ -2092,28 +2554,6 @@ def gang_handler(request, params, sub_action):
         
 
         return redirect(reverse('wap')+f'?cmd={ParamSecurity.generate_param("gang", "detail_gang", params, action="gang")}')
-        # return render(request, 'gang_detail.html', {
-        #     'create_param': create_param,
-        #     
-        #     "wap_encrypted_param": wap_encrypted_param,
-        #     # 'create_param': create_param,
-        #     # 'gang_list': gang_list,
-        #     'player_encrypted_param': ParamSecurity.generate_param(
-        #         entity_type='player',
-        #         sub_action='detail_player',
-        #         params=gang.leader.id,
-        #         action='player',
-        #         # one_time=True,
-        #     ),
-        #     'gang': gang,
-        #     'apply_gang_params': ParamSecurity.generate_param(
-        #         entity_type='gang',
-        #         sub_action='apply_gang',
-        #         params=gang.id,
-        #         action='gang',
-        #         # one_time=True,
-        #     ),
-        # })
 
     elif sub_action == "record_apply_gang":
         gang_id = params.get("gang_id")
@@ -2227,19 +2667,6 @@ def gang_handler(request, params, sub_action):
         
         
         return redirect(reverse('wap') + f'?cmd={ParamSecurity.generate_param("gang", "list_gang", {}, action="gang")}')
-        # return render(request, 'gang_detail.html', {
-        #     
-        #     "wap_encrypted_param": wap_encrypted_param,
-        #     'op_action': 'record_apply_gang',
-        #     'apply_record': apply_record,
-        #     'revoke_apply_record': ParamSecurity.generate_param(
-        #         entity_type='gang',
-        #         sub_action='revoke_apply_gang',
-        #         params=gang.id,
-        #         action='gang',
-        #         # one_time=True,
-        #     ),
-        # })
 
     elif sub_action == "accept_apply":
         player_id = params.get("player_id")
@@ -2279,25 +2706,20 @@ def gang_handler(request, params, sub_action):
     else:
         pass
 
+
+
 def chat_handler(request, params, sub_action):
     # 处理玩家相关的操作
     curr_player = request.session["player"]
     if sub_action == 'send_message':
         # 处理发送消息的逻辑
-        
 
-        param_data = request.secure_params.get('cmd')
-        print(f"player param_data: {param_data}")
-        if not param_data:
-            return render_error(request, "参数错误")
-        entity = param_data['entity']
-        sub_action = param_data['sub_action']
-        params = param_data['params']
+        chat_type = params.get("chat_type", 2)  # 默认是世界消息
 
         create_param = ParamSecurity.generate_param(
             entity_type='chat',
             sub_action='send_message',
-            params=params,
+            params={'chat_type': chat_type},
             action='chat'
         )
 
@@ -2313,179 +2735,149 @@ def chat_handler(request, params, sub_action):
             print(message)
             ### 校验字段
 
-
-            # if Player.objects.filter(name=player_name).exists():
-            #     messages.error(request, "该用户名已被注册，请更换用户名后重试！")
-            #     return render(request, 'create_player.html', {'create_param': create_param
-            #     })
             chat_list = []
             if message:
-                chat = ChatMessage.objects.create(type_id=2, sender=curr_player_id,sender_name=player_name,message=message)
-                messages.success(request, "发送成功")
+                if len(message) > 100:
+                    messages.error(request, "消息长度不能超过100个字符")
+                    return redirect(reverse('wap') + f'?cmd={ParamSecurity.generate_param("chat", "list_chat", {"chat_type": chat_type}, action="chat")}')
+                if chat_type == 2:
+                    # 世界消息
+                    chat = ChatMessage.objects.create(type_id=chat_type, sender=curr_player.id, sender_name=curr_player.name, message=message)
+                elif chat_type == 3:
+                    # 私聊消息
+                    receiver_id = params.get("receiver_id")
+                    if not receiver_id:
+                        messages.error(request, "私聊消息需要指定接收者")
+                        return redirect(reverse('wap') + f'?cmd={ParamSecurity.generate_param("chat", "list_chat", {"chat_type": chat_type}, action="chat")}')
+                    chat = ChatMessage.objects.create(type_id=chat_type, sender=curr_player.id, sender_name=curr_player.name, message=message, receiver=receiver_id)
+                elif chat_type == 4:
+                    # 帮会消息
+                    # bangpai_id = params.get("bangpai_id")
+                    # 提前获取用户帮派和队伍信息
+                    gang_member = GangMember.objects.filter(player_id=curr_player.id).first()
+                    bangpai_id = gang_member.gang.id if gang_member else None
 
-                
+                    if bangpai_id is None:
+                        messages.error(request, "帮会消息需要指定帮会ID")
+                        return redirect(reverse('wap') + f'?cmd={ParamSecurity.generate_param("chat", "list_chat", {"chat_type": chat_type}, action="chat")}')
+                    chat = ChatMessage.objects.create(type_id=chat_type, sender=curr_player.id, sender_name=curr_player.name, message=message, bangpai_id=bangpai_id)
+                elif chat_type == 5:
+                    # 队伍消息
+                    team_member = TeamMember.objects.filter(player_id=curr_player.id).first()
+                    duiwu_id = team_member.team.id if team_member else None
+                    if duiwu_id is None:
+                        messages.error(request, "队伍消息需要指定队伍ID")
+                        return redirect(reverse('wap') + f'?cmd={ParamSecurity.generate_param("chat", "list_chat", {"chat_type": chat_type}, action="chat")}')
+                    chat = ChatMessage.objects.create(type_id=chat_type, sender=curr_player.id, sender_name=curr_player.name, message=message, duiwu_id=duiwu_id)
+                # chat = ChatMessage.objects.create(type_id=2, sender=curr_player_id,sender_name=player_name,message=message)
+                else:
+                    pass
+                messages.success(request, "发送成功")     
             else:
                 # 返回错误信息
                 messages.error(request, "你什么都没输入呀")
 
-            chat_lists = ChatMessage.objects.filter(type_id=2).order_by('-created_at')[:10]
-            # 格式化消息
-            chat_list = []
-            for chat in chat_lists:
-                # 系统消息特殊处理
-                player_encrypted_param = ParamSecurity.generate_param(
-                    entity_type='player',
-                    sub_action='detail_player',
-                    params=chat.sender,
-                    action='player',
-                    # one_time=True,
-                )
-
-                chat_message = '[世界] <a href="/wap/?cmd=' + player_encrypted_param + '">' + chat.sender_name + '</a>' + chat.message + "(" + chat.created_at.strftime('%Y-%m-%d %H:%M:%S') + ")<br>"
-
-                print(chat_message)
-                chat_list.append(chat_message)
-
-
-            
-            
-            return render(request, 'chat.html', {
-                # 'player': player,
-                
-                'wap_encrypted_param': ParamSecurity.generate_param(
-                    entity_type='wap',
-                    sub_action='none',
-                    params=params,
-                    action='wap'
-                ),
-                'chat_list': chat_list,
-                'create_param': ParamSecurity.generate_param(
-                    entity_type='chat',
-                    sub_action='send_message',
-                    params=params,
-                    action='chat'
-                )
-            })
+            return redirect(reverse('wap') + f'?cmd={ParamSecurity.generate_param("chat", "list_chat", {"chat_type": chat_type}, action="chat")}')
         
         
-        # 如果是GET请求，渲染创建角色页面
-        return render(request, 'create_player.html', {
-            'create_param': create_param,
-            
-        })
     elif sub_action == 'list_chat':
         # 处理查看消息的逻辑
         print("viewsssssssssssssssssss")
         chat_type = params.get("chat_type")
-        if chat_type == 1:
-            ## 系统消息
-            chat_lists = ChatMessage.objects.filter(type_id=1).order_by('-created_at')[:10]
-            # 格式化消息
-            chat_list = []
-            for chat in chat_lists:
-                # 系统消息特殊处理
+        page = int(params.get("page", 1))
+        chat_type = int(params.get("chat_type"))
+        PAGE_SIZE = 10  # 每页消息数量
+
+        # 基础查询
+        base_query = ChatMessage.objects.all()
+
+        # 根据聊天类型过滤
+        if chat_type == 1:  # 系统消息
+            base_query = base_query.filter(type_id=1)
+        elif chat_type == 2:  # 世界消息
+            base_query = base_query.filter(type_id=2)
+        elif chat_type == 3:  # 私聊消息
+            base_query = base_query.filter(type_id=3, receiver=curr_player.id)
+        elif chat_type == 4:  # 帮派消息
+            gang = GangMember.objects.filter(player_id=curr_player.id).first()
+            if gang:
+                base_query = base_query.filter(type_id=4, bangpai_id=gang.gang.id)
+
+            else:
+                base_query = base_query.none()
+        elif chat_type == 5:  # 队伍消息
+            team = TeamMember.objects.filter(player_id=curr_player.id).first()
+            if team:
+                base_query = base_query.filter(type_id=5, duiwu_id=team.team.id)
+            else:
+                base_query = base_query.none()
+        
+        # 计算分页
+        total_count = base_query.count()
+        total_pages = (total_count + PAGE_SIZE - 1) // PAGE_SIZE
+        
+        # 确保页码在有效范围内
+        page = max(1, min(page, total_pages))
+        
+        # 获取当前页数据
+        offset = (page - 1) * PAGE_SIZE
+        chat_lists = base_query.order_by('-created_at')[offset:offset + PAGE_SIZE]
+        
+        # 格式化消息
+        chat_list = []
+        for chat in chat_lists:
+            # 生成玩家详情加密参数
+            player_encrypted_param = ""
+            if chat.sender:
                 player_encrypted_param = ParamSecurity.generate_param(
                     entity_type='player',
                     sub_action='detail_player',
-                    params={"player_id":chat.sender},
-                    action='player',
-                    # one_time=True,
+                    params={"player_id": chat.sender},
+                    action='player'
                 )
-                if chat.sender_name and chat.sender_name:
-                    chat_message = "[系统]" + chat.message.format(
-                            player_encrypted_param, chat.sender_name, 
-                    ) + "(" + chat.created_at.strftime('%Y-%m-%d %H:%M:%S') + ")<br>"
-                else:
-                    chat_message = "[系统]" + chat.message.format(chat.sender_name, 
-                    ) + "(" + chat.created_at.strftime('%Y-%m-%d %H:%M:%S') + ")<br>"
-                print(chat_message)
-                chat_list.append(chat_message)
             
-            
-
-        elif chat_type in [3,4,5]:
-            ## 私聊消息
-            if chat_type == 3:
-                chat_lists = ChatMessage.objects.filter(type_id=chat_type,receiver=curr_player.id).order_by('-created_at')[:10]
-            
-            elif chat_type == 4:
-                ### 帮会
-                print("bbbbbbbbbbbbanghuiaaaaaaaaaaaa")
-                get_gang = GangMember.objects.filter(player_id=curr_player.id).first()
-                print(get_gang.gang.id)
-                print("banghuiaaaaaaaaaaaa")
-                if not get_gang is None:
-                    chat_lists = ChatMessage.objects.filter(type_id=chat_type,bangpai_id=get_gang.gang.id).order_by('-created_at')[:10]
-
-            else:    
-                ### 队伍
-                get_team = TeamMember.objects.filter(player_id=curr_player.id).first()
-                if get_team:
-                    chat_lists = ChatMessage.objects.filter(type_id=chat_type,duiwu_id=get_team.team.id).order_by('-created_at')[:10]
-            chat_list = []
-
-            try:
-                for chat in chat_lists:
-                    # 系统消息特殊处理
-                    player_encrypted_param = ParamSecurity.generate_param(
-                        entity_type='player',
-                        sub_action='detail_player',
-                        params={"player_id":chat.sender},
-                        action='player',
-                        # one_time=True,
+            # 格式化消息内容
+            if chat_type == 1:  # 系统消息
+                if chat.sender_name:
+                    content = "[系统]" + chat.message.format(
+                        player_encrypted_param, chat.sender_name
                     )
-
-                    # chat_message = '<a href="/wap/?cmd=' + player_encrypted_param + '">' + chat.sender_name + '</a>:' + chat.message + "(" + chat.created_at.strftime('%Y-%m-%d %H:%M:%S') + ")<br>"
-                    if chat.sender_name:
-                        chat_message = '[{}]<a href="/wap/?cmd={}">{}</a>: {}({})'.format(chat.get_type_id_display(), player_encrypted_param, chat.sender_name, chat.message, chat.created_at.strftime('%Y-%m-%d %H:%M:%S'))
-                    else:
-                        chat_message = '[{}] {}({})'.format(chat.get_type_id_display(), chat.message, chat.created_at.strftime('%Y-%m-%d %H:%M:%S'))
-                    print(chat_message)
-                    chat_list.append(chat_message)
-            except:
-                pass
-        
-        elif chat_type == 2:
-            ## 世界消息
-            
-            chat_lists = ChatMessage.objects.filter(type_id=chat_type).order_by('-created_at')[:10]
-            chat_list = []
-            for chat in chat_lists:
-                # 系统消息特殊处理
-                player_encrypted_param = ParamSecurity.generate_param(
-                    entity_type='player',
-                    sub_action='detail_player',
-                    params={"player_id":chat.sender},
-                    action='player',
-                    # one_time=True,
+                else:
+                    content = "[系统]" + chat.message
+            else:  # 其他消息
+                sender_display = (
+                    f'<a href="/wap/?cmd={player_encrypted_param}">{chat.sender_name}</a>'
+                    if chat.sender_name else "未知"
                 )
-
-                # chat_message = '<a href="/wap/?cmd=' + player_encrypted_param + '">' + chat.sender_name + '</a>:' + chat.message + "(" + chat.created_at.strftime('%Y-%m-%d %H:%M:%S') + ")<br>"
-                chat_message = '[{}]<a href="/wap/?cmd={}">{}</a>: {}({})'.format(chat.get_type_id_display(), player_encrypted_param, chat.sender_name, chat.message, chat.created_at.strftime('%Y-%m-%d %H:%M:%S'))
-
-                    
-                print(chat_message)
-                chat_list.append(chat_message) 
-
-        else:
-
-            chat = ChatMessage.objects.filter(type_id=params.get("chat_type"))
+                content = f"[{chat.get_type_id_display()}]{sender_display}: {chat.message}"
             
-            
-            return render(request, 'chat.html', {
-                # 'player': player,
-                
-                'wap_encrypted_param': ParamSecurity.generate_param(
-                    entity_type='wap',
-                    sub_action='none',
-                    params=params,
-                    action='wap'
-                )
-            })
+            # 添加时间戳
+            full_message = f"{content}({chat.created_at.strftime('%Y-%m-%d %H:%M:%S')})"
+            chat_list.append(full_message)
         
+
+
+        # 创建分页导航
+        pagination = []
+        if page > 1:
+            shouye_params = generate_page_param(entity='chat', type_value=chat_type, page_num=1)
+            shangyiye_params = generate_page_param(entity='chat', type_value=chat_type, page_num=page-1)
+            pagination.append(f'<a href="/wap/?cmd={shouye_params}">首页</a>')
+            pagination.append(f'<a href="/wap/?cmd={shangyiye_params}">上一页</a>')
+        
+        # 显示当前页和总页数
+        pagination.append(f'第{page}/{total_pages}页')
+        
+        if page < total_pages:
+            xiayiye_params = generate_page_param(entity='chat', type_value=chat_type, page_num=page+1)
+            weiye_params = generate_page_param(entity='chat', type_value=chat_type, page_num=total_pages)
+            pagination.append(f'<a href="/wap/?cmd={xiayiye_params}">下一页</a>')
+            pagination.append(f'<a href="/wap/?cmd={weiye_params}">尾页</a>')
+
+
         return render(request, 'chat.html', {
             # 'player': player,
-            
+            'pagination': " ".join(pagination),
             'wap_encrypted_param': ParamSecurity.generate_param(
                 entity_type='wap',
                 sub_action='none',
@@ -2504,7 +2896,7 @@ def chat_handler(request, params, sub_action):
                 entity_type='chat',
                 sub_action='list_chat',
                 params={'chat_type':2},
-                action='wap'
+                action='chat'
             ),
             'siliao_params': ParamSecurity.generate_param(
                 entity_type='chat',
@@ -2516,19 +2908,19 @@ def chat_handler(request, params, sub_action):
                 entity_type='chat',
                 sub_action='list_chat',
                 params={'chat_type':4},
-                action='wap'
+                action='chat'
             ),
             'xitong_params': ParamSecurity.generate_param(
                 entity_type='chat',
                 sub_action='list_chat',
                 params={'chat_type':1},
-                action='wap'
+                action='chat'
             ),
             'duiwu_params': ParamSecurity.generate_param(
                 entity_type='chat',
                 sub_action='list_chat',
                 params={'chat_type':5},
-                action='wap'
+                action='chat'
             ),
         })
     else:
