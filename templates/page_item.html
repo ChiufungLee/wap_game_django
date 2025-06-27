@@ -1,0 +1,102 @@
+{% extends 'base.html' %}
+
+{% block css %}
+
+{% endblock %}
+
+{% block content %}
+
+<p id="errmsg" class="red">{{error_message}}</p>
+{% if messages %}
+<ul class="messages">
+    {% for message in messages %}
+    <li class="{{ message.tags }}">{{ message }}</li>
+    {% endfor %}
+</ul>
+{% endif %}
+
+
+{% if op_action == 'list_item' %}
+        <p>[背包详情]</p>
+            <p>金钱：{{money}}</p>
+            <p>容量：{{now_rongliang}}/{{max_rongliang}}</p>
+            <div class="item-tabs">
+                {% if item_type == 1 %}
+                <p>[<a>装备</a> | <a href="/wap/?cmd={{yaopin_params}}">药品</a> | <a href="/wap/?cmd={{wupin_params}}">物品</a> | <a href="/wap/?cmd={{qita_params}}">其他</a> ]</p>
+                {% elif item_type == 2 %}
+                <p><a href="/wap/?cmd={{zhuangbei_params}}">装备</a> | <a>药品</a> | <a href="/wap/?cmd={{wupin_params}}">物品</a> | <a href="/wap/?cmd={{qita_params}}">其他</a> </p>
+                {% elif item_type == 3 %}
+                <p><a href="/wap/?cmd={{zhuangbei_params}}">装备</a> | <a href="/wap/?cmd={{yaopin_params}}">药品</a> | <a>物品</a> | <a href="/wap/?cmd={{qita_params}}">其他</a> </p>
+                {% elif item_type == 6 %}
+                <p><a href="/wap/?cmd={{zhuangbei_params}}">装备</a> | <a href="/wap/?cmd={{yaopin_params}}">药品</a> | <a href="/wap/?cmd={{wupin_params}}">物品</a> | <a>其他</a> </p>
+                {% else %}
+                {% endif %}
+            </div>
+
+        <div class="item-lists">
+            {% if item_list %}
+                {% for item in item_list %}
+                    <div class="chat-message">
+                        <p>{{ start_index|add:forloop.counter }}. {{ item|safe }}</p>
+                        <!-- <span class="timestamp">{{ chat.created_at|date:"H:i" }}</span> -->
+                    </div>
+                {% endfor %}
+            {% else %}
+                    <p>你的背包空空如也</p>
+            {% endif %}
+        </div>
+        <div id="pagination">
+            {{ pagination|safe }}
+        </div>
+
+
+{% elif op_action == 'detail_item' %}
+	<p>【物品详情】</p>
+		{% if has_item %}
+			<p>名称：{{ playeritem.item.name }}</p>
+			<p>描述：{{ playeritem.item.description }}</p>
+			<p>负重：{{ playeritem.item.weight }}</p>
+			{% if playeritem.attack %}	<p>攻击：{{ playeritem.attack }}</p>	{% else %}{% endif %}
+			{% if playeritem.hp %}		<p>生命：{{ playeritem.hp }}</p>		{% else %}{% endif %}
+			{% if playeritem.defense %}	<p>防御：{{ playeritem.defense }}</p>	{% else %}{% endif %}
+			{% if playeritem.linghunli %}	<p>灵魂力：{{ playeritem.linghunli }}</p>{% else %}{% endif %}
+            <!-- <p>可交易：{% if item.jiaoyi %} [是]	{% else %}[否]{% endif %}</p> -->
+            <p>是否绑定：{% if item.is_bound %} [是]	{% else %}[否]{% endif %}</p> 
+		{% else %}
+			<p>名称：{{ item.name }}</p>
+			<p>描述：{{ item.description }}</p>
+			<p>负重：{{ item.weight }}</p>
+			{% if item.attack %}	<p>攻击：{{ item.attack }}</p>	{% else %}{% endif %}
+			{% if item.hp %}		<p>生命：{{ item.hp }}</p>		{% else %}{% endif %}
+			{% if item.defense %}	<p>防御：{{ item.defense }}</p>	{% else %}{% endif %}
+			{% if item.linghunli %}	<p>灵魂力：{{ item.linghunli }}</p>{% else %}{% endif %}
+            
+		{% endif %}
+		{% if himself %}
+			{% if playeritem.category == 1 %}
+				{% if playeritem.is_equipped %}
+				<p>{{unequip_link|safe}}</p>
+				{% else %}
+				<p>{{equip_link|safe}}</p>
+				<p><a href="/wap/?cmd={{drop_encrypted_param}}">丢弃物品</a></p>
+				{% endif %}
+
+			{% elif playeritem.category == 2 %}
+					<p>数量：{{playeritem.count}}</p>
+                    <p>品阶：{{playeritem.rank_display}}</p>
+					<p>{{use_link|safe}}</p>
+					<p><a href="/wap/?cmd={{drop_encrypted_param}}">丢弃物品</a></p>
+			{% endif %}
+		{% else %}
+		{% endif %}
+
+
+{% else %}
+
+{% endif %}
+
+
+<p><a href="#" onclick="goBack()">返回上页</a></p>
+<p><a href="/wap/?cmd={{wap_encrypted_param}}">返回首页</a></p>
+
+{% endblock %}

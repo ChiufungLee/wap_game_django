@@ -10,7 +10,7 @@ import time
 from django.contrib import messages
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
-from django.db.models import Q
+from django.db.models import Q, Count
 import json
 import random
 from datetime import datetime, timedelta
@@ -19,7 +19,7 @@ import ujson
 from django.utils import timezone
 import logging
 logger = logging.getLogger(__name__)
-
+from .utils.cacheutils import CacheManager
 
 
 # 缓存时间设置
@@ -58,18 +58,17 @@ def generate_direction_links(exits, player_id):
     links = {}
     for direction, info in exits.items():
         # 创建方向移动命令
-        encrypted_cmd = ParamSecurity.generate_param(
-            entity_type='map',
-            sub_action='move',
+        print(exits.items())
+        cmd_params = ParamSecurity.generate_param(
+            entity_type='wap',
+            sub_action='none',
             params={
-                'direction': direction,
-                'player_id': player_id
+                'map_id': info["id"],
             },
-            action='map'
+            action='wap'
         )
-        links[direction] = encrypted_cmd
-    print(links)
-    return links
+        info['cmd_params'] = cmd_params
+    return exits
 
 def get_player_skills(player_id):
     """获取玩家技能数据（带缓存）"""
@@ -200,12 +199,12 @@ def attack_monster(player_id, npc_id, skill_id=None):
     # 计算玩家攻击伤害
     player_attack = random.randint(player_stats['min_attack'], player_stats['max_attack'])
     defense = monster.defense
-    player_damage = max(1, player_attack - defense)  # 至少造成1点伤害
+    player_damage = max(0, player_attack - defense)  # 至少造成1点伤害
     
     # 计算怪物反击伤害
     monster_attack = monster.attack
     player_defense = random.randint(player_stats['min_defense'], player_stats['max_defense'])
-    monster_damage = max(1, monster_attack - player_defense)
+    monster_damage = max(0, monster_attack - player_defense)
     
     # 应用伤害到玩家
     player.current_hp = max(0, player.current_hp - monster_damage)
@@ -255,6 +254,8 @@ def attack_monster(player_id, npc_id, skill_id=None):
                 reward_info = handle_kill_reward(player_id, monster)
                 print(reward_info)
                 cache.delete(hp_key)
+
+                update_task_progress(player_id, npc_id, target_type=2)
     
     # 如果玩家死亡，保存状态（包含传送和恢复后的状态）
     if player_died:
@@ -272,57 +273,173 @@ def attack_monster(player_id, npc_id, skill_id=None):
     }
 
 def handle_kill_reward(player_id, monster):
-    """处理击杀奖励并返回奖励信息"""
-    player = Player.objects.get(id=player_id)
-    
-    # 基础奖励
-    exp_reward = monster.exp_reward
-    gold_reward = monster.gold_reward
-    
-    player.current_exp += exp_reward
-    player.money += gold_reward
-    
-    # 物品掉落
-    loot_items = generate_loot(monster.id)
-    loot_info = []
-    
-    if loot_items:
-        # 简化的背包添加逻辑
-        # for item_id in loot_items:
-        #     item = Item.objects.get(id=item_id)
-        #     loot_info.append({
-        #         'id': item.id,
-        #         'name': item.name,
-        #         'quantity': 1
-        #     })
-        #     player.add_to_bag(item_id)
-            # 获取玩家当前位置
-        player_location = player.map_id
-
-                # 创建地图物品实例 - 每个物品只创建一个实例
-        for item_id, quantity in loot_items.items():
-            item = Item.objects.get(id=item_id)
+    DIRECT_ITEM_TO_BAG = True
+    with transaction.atomic():
+        player = Player.objects.select_for_update().get(id=player_id)
+        
+        # 基础奖励处理
+        exp_reward = monster.exp_reward
+        gold_reward = monster.gold_reward
+        
+        # 使用我们实现的gain_exp方法处理经验（会自动触发升级）
+        new_level = player.gain_exp(exp_reward)
+        player.money += gold_reward
+        
+        # 物品掉落处理（批量优化）
+        loot_items = generate_loot(monster.id)
+        loot_info = []
+        
+        if loot_items:
+            # 批量预取物品信息（减少数据库查询）
+            item_ids = list(loot_items.keys())
+            items_map = {item.id: item for item in Item.objects.filter(id__in=item_ids)}
             
-            # 创建单个地图物品实例，数量为总数量
-            GameMapItem.objects.create(
-                item_id=item_id,
-                map_id=player_location,
-                count=quantity,  # 关键：这里设置总数量
-                expire_time=timezone.now() + timedelta(minutes=30)
-            )    
-            loot_info.append({
-                'id': item.id,
-                'name': item.name,
-                'quantity': quantity
-            })
-    player.save()
+            # 批量创建地图物品（减少数据库写入次数）
+            # map_items_to_create = []
+            # for item_id, quantity in loot_items.items():
+            #     item = items_map.get(item_id)
+            #     if item:
+            #         loot_info.append({
+            #             'id': item.id,
+            #             'name': item.name,
+            #             'quantity': quantity
+            #         })
+                    
+            #         map_items_to_create.append(GameMapItem(
+            #             item_id=item_id,
+            #             map_id=player.map_id,
+            #             count=quantity,
+            #             expire_time=timezone.now() + timedelta(minutes=30)
+            #         ))
+            
+            # # 批量创建（一次数据库操作）
+            # GameMapItem.objects.bulk_create(map_items_to_create)
+            # invalidate_map_cache(player.map_id)
+            # 根据配置选择物品去向
+            if DIRECT_ITEM_TO_BAG:
+                # 直接添加到玩家背包
+                for item_id, quantity in loot_items.items():
+                    item = items_map.get(item_id)
+                    if item:
+                        # 尝试添加到背包
+                        success, message = PlayerItem.add_item(player, item_id, quantity, is_bound=True)
+                        
+                        if success:
+                            loot_info.append({
+                                'id': item.id,
+                                'name': item.name,
+                                'quantity': quantity,
+                                  # 假设所有掉落物品都是绑定的
+                            })
+                            
+                            # 更新任务进度（收集物品）
+                            update_task_progress(player_id, item_id, target_type=1, amount=quantity)
+                        else:
+                            # 背包已满，改为掉落在地图上
+                            GameMapItem.objects.create(
+                                item_id=item_id,
+                                map_id=player.map_id,
+                                count=quantity,
+                                expire_time=timezone.now() + timedelta(minutes=30)
+                            )
+                            invalidate_map_cache(player.map_id)
+                            
+                            loot_info.append({
+                                'id': item.id,
+                                'name': item.name,
+                                'quantity': quantity,
+                                'dropped': True  # 标记为掉落在地图
+                            })
+            else:
+                # 批量创建地图物品（减少数据库写入次数）
+                map_items_to_create = []
+                for item_id, quantity in loot_items.items():
+                    item = items_map.get(item_id)
+                    if item:
+                        loot_info.append({
+                            'id': item.id,
+                            'name': item.name,
+                            'quantity': quantity,
+                            'dropped': True  # 标记为掉落在地图
+                        })
+                        
+                        map_items_to_create.append(GameMapItem(
+                            item_id=item_id,
+                            map_id=player.map_id,
+                            count=quantity,
+                            expire_time=timezone.now() + timedelta(minutes=30)
+                        ))
+                
+                # 批量创建（一次数据库操作）
+                GameMapItem.objects.bulk_create(map_items_to_create)
+                invalidate_map_cache(player.map_id)
+        
+        # 更新任务进度（击杀怪物）
+        # update_task_progress(player_id, monster.id, target_type=2)  # 2=怪物类型
+
+        
+        # 更新最后活动时间
+        player.last_active = timezone.now()
+        player.save(update_fields=['money', 'last_active'])
     
-    # 返回奖励信息
+    # 返回奖励信息（包含新等级）
     return {
         'exp': exp_reward,
         'gold': gold_reward,
-        'loot': loot_info
+        'loot': loot_info,
+        'new_level': new_level  # 返回升级后的等级
     }
+#     """处理击杀奖励并返回奖励信息"""
+#     player = Player.objects.get(id=player_id)
+    
+#     # 基础奖励
+#     exp_reward = monster.exp_reward
+#     gold_reward = monster.gold_reward
+    
+#     player.current_exp += exp_reward
+#     player.money += gold_reward
+    
+#     # 物品掉落
+#     loot_items = generate_loot(monster.id)
+#     loot_info = []
+    
+#     if loot_items:
+#         # 简化的背包添加逻辑
+#         # for item_id in loot_items:
+#         #     item = Item.objects.get(id=item_id)
+#         #     loot_info.append({
+#         #         'id': item.id,
+#         #         'name': item.name,
+#         #         'quantity': 1
+#         #     })
+#         #     player.add_to_bag(item_id)
+#             # 获取玩家当前位置
+#         player_location = player.map_id
+
+#                 # 创建地图物品实例 - 每个物品只创建一个实例
+#         for item_id, quantity in loot_items.items():
+#             item = Item.objects.get(id=item_id)
+            
+#             # 创建单个地图物品实例，数量为总数量
+#             GameMapItem.objects.create(
+#                 item_id=item_id,
+#                 map_id=player_location,
+#                 count=quantity,  # 关键：这里设置总数量
+#                 expire_time=timezone.now() + timedelta(minutes=30)
+#             )    
+#             loot_info.append({
+#                 'id': item.id,
+#                 'name': item.name,
+#                 'quantity': quantity
+#             })
+#     player.save()
+    
+#     # 返回奖励信息
+#     return {
+#         'exp': exp_reward,
+#         'gold': gold_reward,
+#         'loot': loot_info
+#     }
 
 # 获取并缓存怪物掉落信息
 def get_npc_info(npc_id):
@@ -430,7 +547,7 @@ def get_map_context(map_id, player_id=None):
     city_name = current_map.city.name if current_map.city else "未知城市"
     area_name = current_map.city.area.name if current_map.city and current_map.city.area else "未知区域"
     exits = {}
-    direction_exits = []
+    # direction_exits = []
     for direction in ['north', 'south', 'east', 'west']:
         adj_map = getattr(current_map, direction)
         if direction == 'north':
@@ -448,12 +565,10 @@ def get_map_context(map_id, player_id=None):
             exits[direction] = {
                 'id': adj_map.id,
                 'name': adj_map.name,
-                'cmd_params':cmd_params
+                # 'cmd_params':cmd_params
 
             }
             
-            direction_link = '<a href="/wap/?cmd={}">{}</a>'.format(cmd_params,adj_map.name)
-            direction_exits.append(direction_link)
 
 
     npc_instances = GameMapNPC.objects.filter(
@@ -481,23 +596,23 @@ def get_map_context(map_id, player_id=None):
         # if npc.npc_type == 'monster':
         #     drop_info = get_npc_drop_info(npc.id)
         
-        cmd_params = ParamSecurity.generate_param(
-            entity_type="gamenpc", 
-            sub_action="detail_npc", 
-            params={"npc_id":npc.id}, 
-            action="gamenpc"
-        )
+
 
         if npc.npc_type == 'monster':
-
+            # cmd_params = ParamSecurity.generate_param(
+            #     entity_type="gamenpc", 
+            #     sub_action="detail_npc", 
+            #     params={"npc_id":npc.id}, 
+            #     action="gamenpc"
+            # )
             for i in range(instance.count):
                 monsters.append({
                 'id': npc.id,
                 'name': npc.name,
-                'type': npc.npc_type,
+                # 'type': npc.npc_type,
                 # 'level': npc.level,
                 # 'count': instance.count,
-                'cmd_params': cmd_params,
+                # 'cmd_params': cmd_params,
                 # 'hp': npc.hp,
                 # 'level': npc.level,
                 # 'attack': npc.attack,
@@ -508,13 +623,19 @@ def get_map_context(map_id, player_id=None):
                 
             })
         else:
+            # cmd_params = ParamSecurity.generate_param(
+            #     entity_type="gamenpc", 
+            #     sub_action="detail_npc", 
+            #     params={"npc_id":npc.id}, 
+            #     action="gamenpc"
+            # )
             npcs.append({
                 'id': npc.id,
                 'name': npc.name,
-                'type': npc.npc_type,
+                # 'type': npc.npc_type,
                 # 'description': npc.description,
                 # 'dialogue': npc.dialogue,
-                'cmd_params': cmd_params
+                # 'cmd_params': cmd_params
             })
     
     # 获取地图物品（排除已拾取和过期的）
@@ -533,7 +654,8 @@ def get_map_context(map_id, player_id=None):
                 'id': item.item.id,
                 'name': item.item.name,
                 'cmd_params': cmd_params,
-                'count': item.count
+                'count': item.count,
+                'level': item.item.level,
             })
     # 获取地图玩家（排除自己）
     players_query = Player.objects.filter(map_id=map_id)
@@ -603,7 +725,7 @@ def pick_item(player, map_item_id):
                 return False, "物品已过期"
             
             # 添加物品到背包
-            success, message = PlayerItem.add_item(player, locked_item.item_id, count=1)
+            success, message = PlayerItem.add_item(player, locked_item.item_id, count=1, is_bound=True,)
             if not success:
                 return False, message
             
@@ -969,7 +1091,7 @@ def index(request):
             ),
             "player":player,
             "user": user,
-            
+            'user_admin': user_admin,
             'has_player': has_player,
         })
 
@@ -1096,7 +1218,7 @@ def game_page(request):
     
     if not secure_params:
         # return JsonResponse({'error': '非法参数'})
-        return redirect(reverse('error') + '?error=非法参数')
+        return redirect(reverse('wap_error') + '?error=非法参数')
 
     page = GamePage.objects.get(id=1)
     
@@ -1139,9 +1261,9 @@ def wap(request):
 
     param_data = request.secure_params.get('cmd')
     if not param_data:
-        error_url = '/login/'
-        return render_error(request, "你已长时间未操作，请重新登录！",{'error_url':error_url})
-    print(f"post param_data: {param_data}")
+        messages.error(request, "你已长时间未操作，请重新登录！")
+        return redirect('/login/')
+    # print(f"post param_data: {param_data}")
     entity = param_data['entity']
     sub_action = param_data['sub_action']
     params = param_data.get('params')
@@ -1159,17 +1281,19 @@ def wap(request):
             player.update_activity()
     except (KeyError, Player.DoesNotExist):
         messages.error(request, "你已长时间未操作，请重新登录！")
-        return redirect(reverse('error'))
+        return redirect(reverse('game_error'))
     
     # print(player.total_attributes())
-
+    print(f"player map{player.map.id}")
     new_map_id = params.get("map_id")
     # # 记录旧地图ID
     old_map_id = player.map.id
-    
+    print(f"new_map_id{new_map_id}")
+    print(f"old_map_id{old_map_id}")
     # # 验证新地图是否存在
     if new_map_id:
         # 确保地图ID有效
+        print(f"有新地图{old_map_id}")
         try:
             new_map = GameMap.objects.get(id=new_map_id)
         except GameMap.DoesNotExist:
@@ -1180,7 +1304,7 @@ def wap(request):
         player.map_id = new_map_id
         # player.last_position_update = timezone.now()
         player.save(update_fields=['map_id'])
-        
+        print(f"位置变化了啊啊啊啊啊啊啊{old_map_id}")
         # 清除相关缓存
         invalidate_map_cache(old_map_id)  # 清除旧地图缓存
         invalidate_map_cache(new_map_id)  # 清除新地图缓存
@@ -1188,18 +1312,19 @@ def wap(request):
 
     print("当前所在地图" + player.map.name)
     print("当前所在地图" + str(player.map.id))
-    request.session["player"] = player
+    # request.session["player"] = player
     # print("target_map:"+ str(new_map_id))
     print(entity)
     print(params)
     # context['direction_links'] = generate_direction_links(
     #     context['exits'], player.id
     # )
+    print(f"player map{player.map.id if player.map else 'None'}")
+    print(f"获取缓存ID{player.map.id if player.map else 'None'}")
+    print(f"获取玩家啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊缓存ID{player.id if player.id else 'None'}")
     context = get_map_context(player.map.id, player.id)
     # get_map = get_map_context(player.map.id, player.id)  
-    context['direction_links'] = generate_direction_links(
-        context['exits'], player.id
-    )  
+ 
 
     # context['action_links'] = generate_action_links(
     #     map_id, player.id, context
@@ -1209,36 +1334,74 @@ def wap(request):
     #     map_id, player.id, context
     # )
 
-    test_items = GameMapItem.objects.filter(
-        map_id=1,
-        expire_time__gt=timezone.now(),
-        picked_by__isnull=True
-    ).select_related('item').only(
-        'id', 'item__id', 'item__name', 'count'
-    )[:MAX_ITEMS_DISPLAY]
-    print(test_items)
+    # test_items = GameMapItem.objects.filter(
+    #     map_id=1,
+    #     expire_time__gt=timezone.now(),
+    #     picked_by__isnull=True
+    # ).select_related('item').only(
+    #     'id', 'item__id', 'item__name', 'count'
+    # )[:MAX_ITEMS_DISPLAY]
+    # print(test_items)
 
-    exits = context['exits']
+    ### 获取地图对象
+    # exits = context['exits']
+    # print(f"exits:aaaaaaaaaaaaaaaaaaaaaaaaaaaaa{exits}")
     npcs = context.get('npcs', [])
-    items = context['items']
-    print(npcs)
-    print("*****************************")
     players = context.get('players', [])
     monsters = context.get('monsters', [])
-    print(items)
+    current_map = context.get('map')
+    items = context['items']
+    exits = generate_direction_links(
+        context['exits'], player.id
+    ) 
+    print(f"exits:bbbbbbbbbbbbbbbbbbbbbbbbbbbb{exits}")
+    for npc in npcs:
+        cmd_params = {
+            'npc_id': npc['id'],
+        }
+        npc['cmd_params'] = ParamSecurity.generate_param(
+            entity_type="gamenpc", 
+            sub_action="detail_gamenpc", 
+            params=cmd_params,
+            action="gamenpc"
+        )
+    for monster in monsters:
+        cmd_params = {
+            'npc_id': monster['id'],
+        }
 
+        # 保留原始参数，添加玩家ID
+        monster['cmd_params'] = ParamSecurity.generate_param(
+            entity_type="gamenpc", 
+            sub_action="detail_gamenpc", 
+            params=cmd_params,
+            action="gamenpc"
+        )
+    for player in players:
+        cmd_params = {
+            'player_id': player['id'],
+        }
 
+        # 保留原始参数，添加玩家ID
+        player['cmd_params'] = ParamSecurity.generate_param(
+            entity_type="player", 
+            sub_action="detail_player", 
+            params=cmd_params,
+            action="player"
+        )
+    print(npcs)
+
+    
+    print(npcs)
+    print("*****************************")
+
+    print(current_map)
 
 
 
     if entity == 'wap' and sub_action == 'none':
         # 处理无操作的情况
-        try:
-            player_id = request.session["player_id"]
-        except:
-            messages.error(request, "会话过期，请重新登录")
-            error_url = '/login/'
-            return redirect(reverse('error'))
+
         print(f"player_id is " + str(player_id))
         player = Player.objects.filter(id=player_id).first()
     
@@ -1286,7 +1449,6 @@ def wap(request):
             chat_list.append(chat_message)
         ### 地图
         # 获取当前地图  
-        map = GameMap.objects.get(id=player.map.id)
 
         # 帮会
 
@@ -1309,7 +1471,7 @@ def wap(request):
                 action='wap'
             ),
             'exits': exits,
-            'map': map,
+            'map': current_map,
             'npcs':npcs,
             'items':items,
             'map_players': players,
@@ -1320,6 +1482,18 @@ def wap(request):
             'team_encrypted_param': ParamSecurity.generate_param(entity_type='team',sub_action='list_team',params = {'team_type':1},action='team'),
             'skill_encrypted_param': ParamSecurity.generate_param(entity_type='skill',sub_action='list_skill',params = {'skill_id':1},action='skill'),
             'item_encrypted_param': ParamSecurity.generate_param(entity_type='item',sub_action='list_item',params = {'item_type':1},action='item'),
+            'task_encrypted_param': ParamSecurity.generate_param(
+                entity_type='task',
+                sub_action='list_task',
+                params = {'player_id':player.id},
+                action='task'
+                ),
+            'shop_encrypted_param': ParamSecurity.generate_param(
+                entity_type='shop',
+                sub_action='list_shop',
+                params = {'shop_type':2},
+                action='shop'
+                ),
         })
     elif entity == 'wap' and sub_action == 'move':
          return movemap_handler(request, params, sub_action)
@@ -1343,28 +1517,69 @@ def wap(request):
         return skill_handler(request, params, sub_action)
     elif entity == 'item':
         return item_handler(request, params, sub_action)
+    elif entity == 'task':
+        return task_handler(request, params, sub_action)
+    elif entity == 'shop':
+        return shop_handler(request, params, sub_action)
     else:
 
         
         
         messages.error(request, "未知操作")
-        return render(request, 'error.html', )
+        return render(request, 'wap_error.html', )
 
-def render_error(request, message, status=400):
+def handle_error(request, message=None):
     """安全渲染错误页面"""
-    response = render(request, 'error.html', {
-        'error_message': message,
-        'status_code': status
-    })
-    response.status_code = status
-    return response
+    if message:
+        pass
+    else:
+        messages.error(request,"非法操作")
+    return render(request, 'wap_error.html', {
+        "message":message,
+        'wap_encrypted_param': ParamSecurity.generate_param(
+            entity_type="wap", 
+            sub_action="none", 
+            params={}, 
+            action="wap"
+        ),
+        })
 
+def shop_handler(request, params, sub_action):
+    shop_type = params.get("shop_type",2)
+    player = request.session.get("player")
+    if sub_action == "list_shop":
+        goods = CacheManager.get_mall_goods(shop_type=2)
+        # 格式化商品数据
+        formatted_goods = []
+        for item in goods:
+            formatted_goods.append({
+                'id': item['id'],
+                'item_id': item['item_id'],
+                'item_name': item['item__name'],
+                'description': item['item__description'],
+                'price': item['price'],
+                'currency_type': item['currency_type']
+            })
+        print(f"获取到的物品信息是：{formatted_goods}")
+        return render(request, 'page_shop.html',{
+                'item': item,
+                'op_action': 'list_shop',
+                'shop_type': 2,
+                'formatted_goods': formatted_goods,
+                'wap_encrypted_param': ParamSecurity.generate_param(
+                    entity_type='wap',
+                    sub_action='none',
+                    params = {'player_id':player.id},
+                    action='wap'
+                ),
+                'drop_encrypted_param': None,
+            })
 
 def item_handler(request, params, sub_action):
     map_item_id = params.get("map_item_id")
     # print("item_id")
-    player = request.session.get("player")
-    
+    player_id = request.session.get("player_id")
+    player = Player.objects.get(id=player_id)
     if sub_action == "get_item":
         
         # item = Item.objects.get(id=item_id)
@@ -1447,7 +1662,7 @@ def item_handler(request, params, sub_action):
             pagination.append(f'<a href="/wap/?cmd={xiayiye_params}">下一页</a>')
             pagination.append(f'<a href="/wap/?cmd={weiye_params}">尾页</a>')
 
-        return render(request, 'object_rank.html',{
+        return render(request, 'page_item.html',{
             'item_list': item_list,
             'op_action': 'list_item',
             'wap_encrypted_param': ParamSecurity.generate_param(
@@ -1516,7 +1731,7 @@ def item_handler(request, params, sub_action):
                     params = {'player_id':player.id,'player_item_id':playeritem.id,'item_id':playeritem.item_id},
                     action='item'
                 ),
-                chuandai_link = '<a href="/wap/?cmd={}">穿戴</a>'.format(equip_params[0])
+                equip_link = '<a href="/wap/?cmd={}">穿戴</a>'.format(equip_params[0])
                 if playeritem.is_equipped == 1:
                     unequip_params = ParamSecurity.generate_param(
                         entity_type='item',
@@ -1537,7 +1752,7 @@ def item_handler(request, params, sub_action):
                 action_link = '<a href="/wap/?cmd={}">使用</a>'.format(use_params[0])
             has_item = True
             himself = True
-            return render(request, 'gang_detail.html',{
+            return render(request, 'page_item.html',{
                 'playeritem': playeritem,
                 'op_action': 'detail_item',
                 'equip_link': equip_link,
@@ -1613,7 +1828,7 @@ def item_handler(request, params, sub_action):
         # if player_item is None:
             ## 没有物品
         success, message = use_heal_item(player_item, player)
-        if player_item.count > 1:
+        if player_item.count >= 1:
             wap_encrypted_param = ParamSecurity.generate_param(
                 entity_type="item", 
                 sub_action="detail_item", 
@@ -1631,7 +1846,7 @@ def item_handler(request, params, sub_action):
                     action="item"
                 )  
             else:
-                messages.success(request, message)
+                messages.error(request, message)
                 wap_encrypted_param = ParamSecurity.generate_param(
                     entity_type="item", 
                     sub_action="detail_item", 
@@ -1752,18 +1967,34 @@ def attack_handler(request, params, sub_action):
             entity_type="attack", 
             sub_action="attack_monster", 
             params={"skill_id":skill["id"],"npc_id":npc_id,"npc":npc,}, 
+            one_time=True,
             action="attack"
             )
         skill['cmd_params'] = cmd_params
-
+            
+    run_cost = npc["gold_reward"] * 5
 
     if sub_action == "attack_monster":
+        # if request.method == "POST":
+        reward_info = None
+        
         try:
+            # skill_id = params.get("skill_id")
+            # reward_info = None
             attack_result = attack_monster(player_id, npc_id, skill_id)
-
             # 更新session中的玩家状态
             request.session['player'] = Player.objects.get(id=player_id)
-            
+            request.session['last_attack_result'] = {
+                'attack_result': attack_result,
+                'reward_info': attack_result['reward_info'],
+                'npc_id': npc_id
+            }
+
+            # 获取并添加任务进度信息
+            # print(f"playerid==========================={player_id}")
+
+
+
             # 如果是玩家死亡，重定向到安全区
             if attack_result['player_died']:
                 messages.error(request, "你竟然被怪物击败了！已被传送到安全区。")
@@ -1779,14 +2010,26 @@ def attack_handler(request, params, sub_action):
                 return redirect(safe_area_url)
 
             # 如果是击杀，获取奖励信息
-            reward_info = None
+            
             if attack_result['killed']:
                 # reward_info = handle_kill_reward(player_id, GameNPC.objects.get(id=npc_id))
                 reward_info = attack_result.get('reward_info')
+                        # 存储攻击结果在session中
+                print(reward_info)
             
-            request.session['player'].current_hp = attack_result['player_current_hp']
+                # 重定向到结果页面
+                result_param = ParamSecurity.generate_param(
+                    entity_type='attack',
+                    sub_action='attack_result',
+                    params={'npc_id': npc_id,'npc':npc},
+                    action='attack'
+                )
+                return redirect(f"/wap/?cmd={result_param}")    
 
-            print("啥啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊")
+                # request.session['player'].current_hp = attack_result['player_current_hp']
+                
+
+            # print("啥啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊")
             context = {
                 'npc': npc,
                 'op_action': 'attack_monster',
@@ -1795,6 +2038,7 @@ def attack_handler(request, params, sub_action):
                 'status': 'success',
                 'attack_result': attack_result,
                 'reward_info': reward_info,
+                # 'task_progresses': task_progresses,
                 'wap_encrypted_param': ParamSecurity.generate_param(
                     entity_type='wap',
                     sub_action='none',
@@ -1819,15 +2063,64 @@ def attack_handler(request, params, sub_action):
             return redirect(wap_url)
 
 
+    elif sub_action == "attack_result":
+        result = request.session.pop('last_attack_result', None)
+        wap_encrypted_param = ParamSecurity.generate_param(
+            entity_type='wap',
+            sub_action='none',
+            params={'player_id': player.id},
+            action='wap'
+        )
+        
+        if not result:
+            # return redirect_to_map()  # 没有结果则返回地图
+            wap_url = "/wap/?cmd=" + wap_encrypted_param
+            return redirect(wap_url)
+        print(f"击杀结果是：{result['reward_info']}")    
+        # 获取NPC当前状态
+        npc_id = result['npc_id']
+        npc = GameNPC.objects.get(id=npc_id)
+        
+        player_tasks = PlayerTask.objects.filter(
+            player_id=player_id, 
+            status=1
+        )
+        
+        task_progresses = []
+        for task in player_tasks:
+            print(f"taskid==========================={task.id}")
+            progresses = get_task_progress(player.id, task.task.id)
+            for progress in progresses:
+                target_name = CacheManager.get_target_name(progress["target_type"], progress["target_id"])
+                progress["target_name"] = target_name
+
+            task_progresses.append({
+                'task_id': task.task_id,
+                'task_name': task.task.name,
+                'progress': progress
+            })
+
+        print(f"战斗结果是{task_progresses}")
+        return render(request, 'monster_attack.html', {
+            'attack_result': result['attack_result'],
+            'reward_info': result['reward_info'],
+            'npc': npc,
+            'op_action': 'attack_result',
+            'task_progresses': task_progresses,
+            'wap_encrypted_param': wap_encrypted_param
+        })
     elif sub_action == "attack_boss":
         pass
-    elif sub_action == "attack":
+    elif sub_action == "pre_attack":
+
+
 
         return render(request, 'monster_attack.html',{
             'npc':npc,
-            'op_action': 'attack_monster',
+            'op_action': 'pre_attack',
             'player':player,
             'player_skills': player_skills,
+            'run_cost': run_cost,
             'wap_encrypted_param': ParamSecurity.generate_param(
                     entity_type='wap',
                     sub_action='none',
@@ -1840,98 +2133,619 @@ def attack_handler(request, params, sub_action):
         pass
 
 def gamenpc_handler(request, params, sub_action):
-    try:
-        player = request.session["player"]
-        # player.update_activity()
-    except:
-        messages.error(request, "你已长时间未操作，请重新登录！")
-        return redirect(reverse('error'))
 
+    player = request.session["player"]
+    
     # 获取当前地图上下文（从缓存中）
     # context = get_map_context(player.map.id, player.id)
+    npc_id = params.get("npc_id") 
+    # if sub_action == 'detail_gamenpc':
     
-    npc_id = params.get("npc_id")
 
-    # 查找NPC
-    # npc = next((n for n in context['npcs'] if n['id'] == npc_id), None)
-    #     level = models.IntegerField(default=1, verbose_name="等级")   # 通用属性
-    # # map = models.ForeignKey('GameMap', null=True, blank=True, on_delete=models.CASCADE, verbose_name="地图")  # 通用属性
-    # # map_id = models.PositiveIntegerField(null=True, blank=True, db_index=True, verbose_name="地图")
-    
-    # # ---- 怪物专属字段 (nullable) ----
-    # hp = models.IntegerField(null=True, blank=True, verbose_name="生命值")
-    # attack = models.IntegerField(null=True, blank=True, verbose_name="攻击力")
-    # defense = models.IntegerField(null=True, blank=True, verbose_name="防御力")
-    # exp_reward = models.IntegerField(default=0, verbose_name="经验奖励")
-    # gold_reward = models.IntegerField(default=0, verbose_name="金钱奖励")
-    # drop_items = models.JSONField(null=True, blank=True, verbose_name="物品掉落")  # 掉落物品JSON
-    # is_boss = models.BooleanField(default=False, verbose_name="是否BOSS") 
-    # if not npc:
-    #     # 如果缓存中没有，从数据库查询（很少发生）
     #     try:
-    #         npc_obj = GameNPC.objects.get(id=npc_id)
+    #         npc = get_npc_info(npc_id)
 
-    #         npc = {
-    #             'id': npc_obj.id,
-    #             'name': npc_obj.name,
-    #             'type': npc_obj.npc_type,
-    #             'description': npc_obj.description,
-    #             'dialogue': npc_obj.dialogue,
-    #             'hp': npc_obj.hp,
-    #             'level': npc_obj.level,
-    #             'attack': npc_obj.attack,
-    #             'defense': npc_obj.defense,
-    #             'exp_reward': npc_obj.exp_reward,
-    #             'gold_reward': npc_obj.gold_reward,
-                
-    #         }
+    #         drop_info = npc["drop_info"]
+    #         if drop_info:
+    #             for item in drop_info:
+    #                 full_params = {
+    #                     'item_id': item['item_id'],
+    #                     'player_id': player.id,
+    #                     'player_item_id': None
+    #                 }
+    #                 print(f"item_id{item['item_id']}")
+    #                 print(f"item_id{player.id}")
+    #                 # 保留原始参数，添加玩家ID
+    #                 item['item_params'] = ParamSecurity.generate_param(
+    #                     entity_type="item", 
+    #                     sub_action="detail_item", 
+    #                     params=full_params,
+    #                     action="item"
+    #                 )
+
     #     except GameNPC.DoesNotExist:
-    #         return redirect('game:map_view')
-    # print(npc["name"])
-    try:
-        npc = get_npc_info(npc_id)
+    #         messages.error(request, "NPC 不存在！")
+    #         return redirect('game_error')
+    #     print(npc)
 
-        drop_info = npc["drop_info"]
-        if drop_info:
-            for item in drop_info:
-                full_params = {
-                    'item_id': item['item_id'],
-                    'player_id': player.id,
-                    'player_item_id': None
-                }
-                print(f"item_id{item['item_id']}")
-                print(f"item_id{player.id}")
-                # 保留原始参数，添加玩家ID
-                item['item_params'] = ParamSecurity.generate_param(
-                    entity_type="item", 
-                    sub_action="detail_item", 
-                    params=full_params,
-                    action="item"
-                )
+    #     print(drop_info)
+    #     return render(request, 'player_status.html', {
+    #         'npc':npc,
+    #         'op_action': 'npc',
+    #         'drop_info': drop_info,
+    #         'wap_encrypted_param': ParamSecurity.generate_param(
+    #             entity_type='wap',
+    #             sub_action='none',
+    #             params = {'player_id':player.id},
+    #             action='wap'
+    #         ),
+    #         'attack_encrypted_param': ParamSecurity.generate_param(
+    #             entity_type='attack',
+    #             sub_action='pre_attack',
+    #             params = {'player_id':player.id,'npc_id':npc["id"],"npc":npc},
+    #             action='attack'
+    #         ),
+    #         })
+     # 从缓存获取NPC信息
+    if sub_action == 'detail_gamenpc':
+        npc_info = CacheManager.get_npc_info(npc_id)
 
-    except GameNPC.DoesNotExist:
-        messages.error(request, "NPC 不存在！")
-        return redirect('game:map_view')
-    print(npc)
+        npc_type = npc_info["npc_type"]
+        available_tasks = []
+        completable_tasks = []
+        in_progress_tasks = []
+        if npc_type == 'npc':
 
-    print(drop_info)
-    return render(request, 'player_status.html', {
-        'npc':npc,
-        'op_action': 'npc',
-        'drop_info': drop_info,
-        'wap_encrypted_param': ParamSecurity.generate_param(
-            entity_type='wap',
-            sub_action='none',
-            params = {'player_id':player.id},
-            action='wap'
-        ),
-        'attack_encrypted_param': ParamSecurity.generate_param(
-            entity_type='attack',
-            sub_action='attack',
-            params = {'player_id':player.id,'npc_id':npc["id"],"npc":npc},
-            action='attack'
-        ),
+            drop_info = None
+            # pass
+            # # 获取玩家可提交任务
+            # completable_tasks = get_completable_tasks(player.id, npc_id)
+            # print(f"可提交的任务有{completable_tasks}")
+            """获取NPC相关的所有任务（一次查询完成）"""
+            # player = Player.objects.get(id=player.id)
+            # 获取玩家所有任务状态
+            player_tasks = CacheManager.get_player_tasks(player.id)
+            player_task_map = {pt['task_id']: pt for pt in player_tasks}
+            
+            # 获取NPC相关的所有任务
+            tasks = Task.objects.filter(
+                models.Q(accept_npc_id=npc_id) | models.Q(submit_npc_id=npc_id)
+            ).select_related('accept_npc', 'submit_npc').prefetch_related('targets')
+            print(f"啊啊啊啊啊啊啊啊npc所有任务有{tasks}啊啊啊啊啊啊啊啊啊啊")
+            print(f"啊啊啊啊啊啊啊啊玩家所有所有任务有{player_task_map}啊啊啊啊啊啊啊啊啊啊")
+            for task in tasks:
+                task_id = task.id
+                task_config = CacheManager.get_task_config(task_id)
+                
+                # 检查是否可接取
+                if task.accept_npc_id == npc_id:
+                    # 检查是否已存在任务
+                    if task_id not in player_task_map:
+                        # 检查前置任务
+                        if task.prev_task_id:
+                            prev_completed = any(
+                                pt['task_id'] == task.prev_task_id and pt['status'] == 2
+                                for pt in player_tasks
+                            )
+                            if not prev_completed:
+                                continue
+                        
+                        # 检查触发条件
+                        trigger_conditions = task_config.get('trigger_conditions', {})
+                        if not check_trigger_conditions(player, trigger_conditions):
+                            continue
+
+                        available_tasks.append({
+                            'id': task_id,
+                            'name': task.name,
+                            'description': task.description,
+                            # 'status': player_task['status'],
+                            'cmd_params': ParamSecurity.generate_param(
+                                entity_type='task',
+                                sub_action='detail_task',
+                                params={'task_id': task_id, 'status':'available'},
+                                action='task'
+                            )
+                        })
+                # 检查是否可提交
+                if task.submit_npc_id == npc_id:
+                    player_task = player_task_map.get(task_id)
+                    print(f"playertask========={player_task}")
+                    if player_task and player_task['status'] == 1:  # 进行中
+                            # 添加到进行中任务
+                        in_progress_tasks.append({
+                            'id': task_id,
+                            'name': task.name,
+                            'status': player_task['status'],
+                            'description': task.description,
+                            'cmd_params': ParamSecurity.generate_param(
+                                entity_type='task',
+                                sub_action='detail_task',
+                                params={'task_id': task_id,'status':'in_progress','player_task_id':player_task["id"],"is_page_pre_npc":True},
+                                action='task'
+                            )
+                        })
+            print(f"进行中的任务有{in_progress_tasks}")
+        if npc_type == 'monster':
+            
+            ### 获取怪物掉落
+            drop_info = npc_info["drop_info"]
+            if drop_info:
+                for item in drop_info:
+                    full_params = {
+                        'item_id': item['item_id'],
+                        'player_id': player.id,
+                        'player_item_id': None
+                    }
+                    print(f"item_id{item['item_id']}")
+                    print(f"item_id{player.id}")
+                    # 保留原始参数，添加玩家ID
+                    item['item_params'] = ParamSecurity.generate_param(
+                        entity_type="item", 
+                        sub_action="detail_item", 
+                        params=full_params,
+                        action="item"
+                    )
+            print(f"格式化后的掉落{drop_info}")
+        
+        context = {
+            'npc': npc_info,
+            'drop_info': drop_info,
+            'available_tasks': available_tasks,
+            # 'completable_tasks': completable_tasks,
+            'in_progress_tasks': in_progress_tasks,
+            'op_action': 'detail_npc',
+            # 'greeting': npc_info.get('dialogue') or "少侠有何贵干？",
+            'wap_encrypted_param': ParamSecurity.generate_param(
+                entity_type='wap',
+                sub_action='none',
+                params = {'player_id':player.id},
+                action='wap'
+            ),
+            'attack_encrypted_param': ParamSecurity.generate_param(
+                entity_type='attack',
+                sub_action='pre_attack',
+                params = {'player_id':player.id,'npc_id':npc_info["id"],"npc":npc_info},
+                action='attack'
+            ),
+            
+        }
+        return render(request, 'page_npc.html', context)
+    elif sub_action == 'continue':
+        # if request.method == 'POST':
+        #     encrypted_action = request.POST.get('encrypted_action')
+        # decrypted = ParamSecurity.decrypt_param(encrypted_action)
+        wap_encrypted_param = ParamSecurity.generate_param(
+                entity_type='wap',
+                sub_action='none',
+                params = {'player_id':player.id},
+                action='wap'
+            )
+
+        return redirect('wap') + f"?cmd={wap_encrypted_param}"
+
+def task_handler(request, params, sub_action):
+
+    task_id = params.get("task_id")
+    player = request.session.get("player")
+
+    
+
+    if sub_action == "detail_task":
+        # is_page_pre_npc = False
+        is_page_pre_npc = params.get("is_page_pre_npc", False)
+        task_info = CacheManager.get_task_config(task_id)
+        task_targets = task_info['targets']
+        targets_info = []
+        for target in task_targets:
+            target_name = CacheManager.get_target_name(target["target_type"], target["target_id"])
+            targets_info.append({
+                'target_type': target["target_type"],
+                'target_id': target["target_id"],
+                'amount': target["amount"],
+                'target_name': target_name
+            })
+        task_status = params.get("status","in_progress")
+
+        player_task_id = params.get("player_task_id",0)
+        print(f"获取到的玩家任务ID时{player_task_id}")
+        if player_task_id == 0:
+            ### 未领取任务
+            now_progress = None
+            current_count = 0
+
+        else:
+            now_progress = get_task_progress(player.id, task_id)
+            ### 单个目标
+            current_count = now_progress[0].get("current_count")
+
+            if current_count >= targets_info[0]["amount"]:
+                task_status = 'complete'
+
+            if targets_info[0]["target_type"] == 3:
+                task_status = 'complete'
+        #     else:
+        #         pass
+        # now_progress = None
+        # if task_status:
+        # ### 任务未领取
+        #     print(f"task_ id  ={task_id}")
+        #     player_tasks = CacheManager.get_player_tasks(player.id)
+        #     player_task_id = player_task.id
+        #     has_accept = False
+        #     for pt in player_tasks:
+        #         if pt["task_id"] == task_id:
+        #             now_progress = get_task_progress(player.id, player_task_id)[0]
+
+        ### 任务已领取
+        print(f"task_ id  ={task_id}")
+        
+        print(f"任务详情时：{task_info}")
+
+        
+
+        
+        print(f"task_target={task_targets}")
+        
+
+
+        npc_name = get_npc_info(task_info["accept_npc_id"])
+        
+        # if now_progress["current_count"] >= targets_info[0]["amount"]:
+        #     task_status = 'complete'
+        # player_task = CacheManager.get_player_tasks(player.id)
+
+        # if check_task_completion(task_info['id']):
+        #     completable_tasks.append({
+        #         'task': {
+        #             'id': task_id,
+        #             'name': task.name,
+        #             'status': 2,
+        #             'description': task.description
+        #         },
+        #         'player_task_id': player_task['id'],
+        #         'submit_params': ParamSecurity.generate_param(
+        #             entity_type='task',
+        #             sub_action='submit_task',
+        #             params={
+        #                 'player_task_id': player_task['id'],
+        #                 'npc_id': npc_id,
+        #                 'status': 'completable',
+        #             },
+        #             action='task'
+        #         )
+        #     })
+
+        # print(f"当前任务进度时事实上事实上少时诵诗书：{now_progress}")
+        print(f"目标东西是{targets_info}")
+        print(f"任务需求时：{task_targets}")
+        return render(request, 'page_task.html',{
+            'task':task_info,
+            'op_action': 'detail_task',
+            'task_target': targets_info[0],
+            'task_status': task_status,
+            'current_count': current_count,
+            'npc_name': npc_name,
+            'is_page_pre_npc': is_page_pre_npc,
+            'wap_encrypted_param': ParamSecurity.generate_param(
+                entity_type='wap',
+                sub_action='none',
+                params = {"player_id":player.id},
+                action='wap'
+            ),
+            'accept_params': ParamSecurity.generate_param(
+                entity_type='task',
+                sub_action='accept_task',
+                params = {"task_id":task_info["id"],'status':'available','npc_id':task_info["accept_npc_id"]},
+                action='task'
+            ),
+            'complete_params': ParamSecurity.generate_param(
+                entity_type='task',
+                sub_action='submit_task',
+                params = {"player_id":player.id,'task_id':task_info["id"],'npc_id':task_info["accept_npc_id"]},
+                action='task'
+            ),
+            'giveup_params': ParamSecurity.generate_param(
+                entity_type='task',
+                sub_action='giveup_task',
+                params = {"task_id":task_info["id"],'status':'in_progress','npc_id':task_info["accept_npc_id"]},
+                action='task'
+            ),
+            
         })
+    elif sub_action == "accept_task":
+        # task_id = params.get("task_id")
+        npc_id = params.get("npc_id")
+        # monster_id = params.get("monster_id")
+        task_status = params.get("status")
+        print(f"列表中的任务ID{task_id}")
+        task_config = CacheManager.get_task_config(task_id)
+        if not task_config:
+            messages.error(request, "任务不存在")
+            encrypted_param = ParamSecurity.generate_param(
+                entity_type='gamenpc',
+                sub_action='detail_gamenpc',
+                params={'player_id': player.id, 'npc_id': npc_id},
+                action='gamenpc'
+            )
+            return redirect(reverse('wap') + f"?cmd={encrypted_param}")
+        
+        
+        player_tasks = CacheManager.get_player_tasks(player.id)
+        for pt in player_tasks:
+            if pt["task_id"] == task_id:
+                messages.error(request, "你已领取该任务，无法重复领取")
+                encrypted_param = ParamSecurity.generate_param(
+                    entity_type='gamenpc',
+                    sub_action='detail_gamenpc',
+                    params={'player_id': player.id, 'npc_id': npc_id},
+                    action='gamenpc'
+                )
+                return redirect(reverse('wap') + f"?cmd={encrypted_param}")
+
+        # has_task = PlayerTask.objects.filter(task_id=task_id, player=player).exists()
+        # if has_task:
+        #     messages.error("你已领取该任务，无法重复领取")
+        #     return redirect(reverse('wap') + f"?cmd={encrypted_param}")
+
+        # 创建玩家任务
+        player_task = PlayerTask.objects.create(
+            player=player,
+            task_id=task_id,
+            status=1,
+            started_at=timezone.now()
+        )
+        # {'item_name': '聚气散', 'item_count': 2, 'monster_name': None, 'monster_count': 0}
+        # 创建任务进度
+        target = task_config['targets'][0]
+        print(f"任务模板时：{target}")
+        # for target in task_config['targets']:
+        PlayerTaskProcess.objects.create(
+            player_task=player_task,
+            # item_id=item_id,
+            # item_count=player_task
+            target_type=target['target_type'],
+            target_id=target['target_id'],
+            current_count=0
+        )
+        
+        # 清除玩家任务缓存
+        CacheManager.invalidate_player_tasks(player.id)
+        
+        messages.success(request, f"已接取任务: {task_config['name']}")
+        
+        encrypted_param = ParamSecurity.generate_param(
+            entity_type='task',
+            sub_action='detail_task',
+            params = {'task_id': task_id},
+            action='task'
+        )
+
+        return redirect(reverse('wap') + f"?cmd={encrypted_param}")
+
+    elif sub_action == "giveup_task":
+        
+        npc_id = params.get("npc_id")
+        # monster_id = params.get("monster_id")
+        task_status = params.get("status")
+
+        # task_config = CacheManager.get_task_config(task_id)
+        # if not task_config:
+        #     messages.error(request, "任务不存在")
+        #     encrypted_param = ParamSecurity.generate_param(
+        #         entity_type='gamenpc',
+        #         sub_action='detail_gamenpc',
+        #         params={'player_id': player.id, 'npc_id': npc_id},
+        #         action='gamenpc'
+        #     )
+        #     return redirect(reverse('wap') + f"?cmd={encrypted_param}")
+        with transaction.atomic():
+       
+            playertask = PlayerTask.objects.select_for_update().get(
+                    player=player,
+                    task_id=task_id
+                )
+            playertask_process = PlayerTaskProcess.objects.select_for_update().get(
+                    player_task=playertask
+                )
+            playertask_process.delete()
+            playertask.delete()
+
+
+        messages.error(request, "你已放弃此任务")
+
+        CacheManager.invalidate_player_tasks(player.id)
+
+        encrypted_param = ParamSecurity.generate_param(
+            entity_type='task',
+            sub_action='detail_task',
+            params={'player_id': player.id, 'npc_id': npc_id, 'task_id':task_id},
+            action='task'
+        )
+        return redirect(reverse('wap') + f"?cmd={encrypted_param}")
+
+    elif sub_action == "submit_task":
+        npc_id = params.get("npc_id")
+        try:
+            player_task = PlayerTask.objects.get(
+                player=player,
+                task_id=task_id,
+                status=1
+            )
+        except PlayerTask.DoesNotExist:
+            messages.error(request, "任务不存在或未进行中")
+            encrypted_param = ParamSecurity.generate_param(
+                entity_type='task',
+                sub_action='detail_task',
+                params={'player_id': player.id, 'npc_id': npc_id, 'task_id':task_id},
+                action='task'
+            )
+            return redirect(reverse('wap') + f"?cmd={encrypted_param}")
+        
+        # 获取任务配置
+        task_config = CacheManager.get_task_config(task_id)
+        if not task_config:
+            messages.error(request, "任务配置错误")
+            encrypted_param = ParamSecurity.generate_param(
+                entity_type='task',
+                sub_action='detail_task',
+                params={'player_id': player.id, 'npc_id': npc_id, 'task_id':task_id},
+                action='task'
+            )
+            return redirect(reverse('wap') + f"?cmd={encrypted_param}")
+
+        if task_config['function_type'] != 1:
+            # 对话任务
+            
+
+            # 验证任务完成状态
+            if not check_task_completion(player_task.id):
+                messages.error(request, "任务尚未完成")
+                encrypted_param = ParamSecurity.generate_param(
+                    entity_type='task',
+                    sub_action='detail_task',
+                    params={'player_id': player.id, 'npc_id': npc_id, 'task_id':task_id},
+                    action='task'
+                )
+                return redirect(reverse('wap') + f"?cmd={encrypted_param}")
+        
+
+        
+        # 发放奖励
+        rewards = task_config['rewards']
+        player.money += rewards.get('money', 0)
+        player.current_exp += rewards.get('exp', 0)
+        player.save()
+        
+
+
+        # 更新任务状态
+        player_task.status = 2  # 已完成
+        player_task.completed_at = timezone.now()
+        player_task.save()
+        
+        # 清除玩家任务缓存
+        CacheManager.invalidate_player_tasks(player.id)
+        
+        messages.success(request, f"你已完成任务{player_task.task.name}")
+        messages.success(request, f"获得经验+{rewards.get('exp', 0)}")
+        messages.success(request, f"获得金钱+{rewards.get('money', 0)}")
+
+        # 处理主线任务链
+        # next_task = None
+        # if task_config['theme'] == 1:  # 主线任务
+        #     next_task = activate_next_chain(player, task_id)
+        
+        # context = {
+        #     'task': task_config,
+        #     'rewards': rewards,
+        #     # 'next_task': next_task
+        # }
+        
+        # return render(request, 'task_page.html', context)
+        encrypted_param = ParamSecurity.generate_param(
+            entity_type='gamenpc',
+            sub_action='detail_gamenpc',
+            params={'player_id': player.id, 'npc_id': npc_id},
+            action='gamenpc'
+        )
+        return redirect(reverse('wap') + f"?cmd={encrypted_param}")
+
+    elif sub_action == "list_task":
+        """玩家任务列表视图"""
+        # player = request.user.player
+        
+        # 从缓存获取玩家任务
+        player_tasks = CacheManager.get_player_tasks(player.id)
+        if not player_tasks:
+            return render(request, 'page_task.html', {
+                'active_tasks': [],
+                'op_action': "list_task",
+                'wap_encrypted_param': ParamSecurity.generate_param(
+                    entity_type="wap", 
+                    sub_action="none", 
+                    params={'player_id':player.id}, 
+                    action="wap"
+                ),
+            })
+        
+        # 获取任务详情
+        task_details = []
+        for pt in player_tasks:
+            if pt["status"] == 1:
+
+                task_config = CacheManager.get_task_config(pt['task_id'])
+                if not task_config:
+                    continue
+                    
+                # 获取任务进度
+                progresses = PlayerTaskProcess.objects.filter(
+                    player_task_id=pt['id']
+                ).values('target_type', 'target_id', 'current_count')
+                
+                # 获取进度详情
+                progress_details = []
+                for progress in progresses:
+                    target_type = progress['target_type']
+                    target_id = progress['target_id']
+                    
+                    # 从缓存获取目标名称
+                    target_name = CacheManager.get_target_name(target_type, target_id)
+                    
+                    target = task_config['targets'][0] 
+                    print(target)
+                    # 获取目标要求数量
+                    # required = next((
+                    #     t['amount'] for t in task_config['targets'] 
+                    #     if t['target_type'] == target_type and t['target_id'] == target_id
+                    # ), 1)
+                    
+                    progress_details.append({
+                        'target_type': target["target_type"],
+                        'target_id':  target["target_id"],
+                        'target_name': target_name,
+                        'current_count': progress['current_count'],
+                        # 'required': required
+                    })
+                
+                # 计算总进度
+                # total_required = sum(d['required'] for d in progress_details)
+                # total_completed = sum(min(d['current_count'], d['required']) for d in progress_details)
+                # progress_percent = int((total_completed / total_required * 100) if total_required > 0 else 100)
+                print(f"pt是少时诵诗书少时诵诗书飒飒飒{pt}")
+                cmd_params = ParamSecurity.generate_param(
+                    entity_type='task',
+                    sub_action='detail_task',
+                    params = {'task_id': pt['task_id'], 'status':'in_progress', 'player_task_id':pt["id"]},
+                    action='task'
+                )
+                task_details.append({
+                    'task': {
+                        'id': task_config['id'],
+                        'name': task_config['name'],
+                        'description': task_config['description']
+                    },
+                    'progresses': progress_details,
+                    'cmd_params': cmd_params
+                    # 'progress_percent': progress_percent
+                })
+        
+        context = {
+            'active_tasks': task_details,
+            'op_action': 'list_task',
+            'wap_encrypted_param': ParamSecurity.generate_param(
+                entity_type="wap", 
+                sub_action="none", 
+                params={'player_id':player.id}, 
+                action="wap"
+            ),
+
+        }
+        print(f"任务详情是{task_details}")
+        return render(request, 'page_task.html', context)
+
+
+
 
 def movemap_handler(request, params, sub_action):
     """
@@ -2385,7 +3199,9 @@ def gang_handler(request, params, sub_action):
                 
                 if Gang.objects.filter(name=gang_name).exists():
                     messages.error(request, "该名称宗门已存在，请更换名称后重试！")
-                    return render(request, 'create_player.html', {'create_param': create_param})
+                    # return render(request, 'page_gang.html', {'create_param': create_param})
+                    gang_params = ParamSecurity.generate_param("gang", "create_gang",  {}, action="gang")
+                    return redirect(reverse('wap')+f'?cmd={gang_params}') 
                 player = request.session["player"]
                 gang = Gang.objects.create(leader=player, name=gang_name)
                 GangMember.objects.create(gang=gang, position='bz',player=player)
@@ -2395,21 +3211,25 @@ def gang_handler(request, params, sub_action):
                     sender_name=gang.name,
                 )
 
+                messages.error(request, "成功创建宗门！")
+                gang_params = ParamSecurity.generate_param("gang", "detail_gang",  {"gang_id":gang.id}, action="gang")
+                return redirect(reverse('wap')+f'?cmd={gang_params}')   
                 
-                
-                # 如果是GET请求，渲染创建角色页面
-                return render(request, 'gang_detail.html', {
-                    'create_param': create_param,
+                # 如果是GET请求，渲染创建帮派页面
+                # return render(request, 'page_gang.html', {
+                #     'create_param': create_param,
                     
-                    "wap_encrypted_param": wap_encrypted_param,
-                    'gang':gang
-                })
+                #     "wap_encrypted_param": wap_encrypted_param,
+                #     'gang':gang
+                # })
             else:
                 messages.error(request, "名称不能为空")
+                gang_params = ParamSecurity.generate_param("gang", "detail_gang",  {}, action="gang")
+                return redirect(reverse('wap')+f'?cmd={gang_params}')   
         
         
-        # 如果是GET请求，渲染创建角色页面
-        return render(request, 'create_player.html', {
+        # 如果是GET请求，渲染创建帮派页面
+        return render(request, 'page_gang.html', {
             'create_param': create_param,
             
             'op_action': 'create_gang',
@@ -2417,49 +3237,135 @@ def gang_handler(request, params, sub_action):
         })
     elif sub_action == 'list_gang':
 
+        sort_field = params.get("sort", "level")
+        
+        # 动态排序映射
+        sorting_mapping = {
+            'money': '-money',          # 资金降序
+            'level': '-level',           # 等级降序
+            'current_count': '-current_count',  # 成员数量降序
+            'reputation': '-reputation',      # 声望降序
+        }
+        
+        # 获取排序字段和显示模板
+        order_field = sorting_mapping.get(sort_field, '-reputation')  # 默认值
 
-
-        get_gang_list = Gang.objects.all()[:10]
-        gang_list = []
-        if get_gang_list:
-            for gang in get_gang_list:
-                gang_encrypted_param = ParamSecurity.generate_param(
-                    entity_type='gang',
-                    sub_action='detail_gang',
-                    params={'gang_id':gang.id},
-                    action='gang',
-                    # one_time=True,
-                )
-                per_gang = '<a href="/wap/?cmd={}">{}</a>'.format(gang_encrypted_param, gang.name)
-                gang_list.append(per_gang)
-
+        display_templates = {
+            'money': '资金:{}',
+            'level': '{}级',
+            'current_count': '{}人',
+            'reputation': '声望:{}'
+        }
+        display_template = display_templates.get(sort_field, '声望:{}')
 
         
+        base_query = Gang.objects.select_related('leader').only(
+            'id', 'name', 'level', 'money', 'reputation', 
+            'max_count', 'leader__name', 'current_count', 
+        ).order_by(order_field)
+
+
+        page = int(params.get("page", 1))
+        PAGE_SIZE = 10  # 每页消息数量
+        
+        # 计算分页
+        total_count = base_query.count()
+        total_pages = (total_count + PAGE_SIZE - 1) // PAGE_SIZE
+        
+        # 确保页码在有效范围内
+        page = max(1, min(page, total_pages))
+        
+        # 获取当前页数据
+        offset = (page - 1) * PAGE_SIZE
+        gang_lists = base_query[offset:offset + PAGE_SIZE]
+        
+        start_index = (page - 1) * PAGE_SIZE
+
+        # 为每个帮派添加显示名称
+        for gang in gang_lists:
+
+            sort_value = getattr(gang, sort_field, gang.reputation)
             
+            # 创建显示名称 (如"天下会(6级)")
+            gang.display_name = f"{gang.name}    ({display_template.format(sort_value)})"
             
-            print(gang.id)
-            # messages.error(request, "你还未加入任何宗门")
-            return render(request, 'object_rank.html', {
-                'create_param': create_param,
-                
-                'op_action': 'list_gang',
-                "wap_encrypted_param": wap_encrypted_param,
-                'gang_list': gang_list,
-                'is_ongang': is_ongang,
-                'mygang_encrypted_param': ParamSecurity.generate_param(
-                    entity_type="gang", 
-                    sub_action="detail_gang", 
-                    params={'gang_id':current_gang}, 
-                    action="gang"
-                ),
-                'record_apply_gang': ParamSecurity.generate_param(
-                    entity_type='gang',
-                    sub_action='record_apply_gang',
-                    params={"gang_id":gang.id},
-                    action='gang',
-                    # one_time=True,
-                ),
-            })
+            # 生成帮派详情链接加密参数
+            gang.detail_params = ParamSecurity.generate_param(
+                entity_type='gang',
+                sub_action='detail_gang',
+                params={'gang_id': gang.id},
+                action='gang'
+            )
+    
+        # 创建分页导航
+        pagination = []
+        if page > 1:
+            shouye_params = generate_page_param(entity='item', type_value=item_type, page_num=1)
+            shangyiye_params = generate_page_param(entity='item', type_value=item_type, page_num=(-1))
+            pagination.append(f'<a href="/wap/?cmd={shouye_params}">首页</a>')
+            pagination.append(f'<a href="/wap/?cmd={shangyiye_params}">上一页</a>')
+        
+        # 显示当前页和总页数
+        pagination.append(f'第{page}/{total_pages}页')
+        
+        if page < total_pages:
+            xiayiye_params = generate_page_param(entity='item', type_value=item_type, page_num=page+1)
+            weiye_params = generate_page_param(entity='item', type_value=item_type, page_num=total_pages)
+            pagination.append(f'<a href="/wap/?cmd={xiayiye_params}">下一页</a>')
+            pagination.append(f'<a href="/wap/?cmd={weiye_params}">尾页</a>')
+            
+        print(f"ganglist--------------------{gang_lists}")
+            # print(gang.id)
+            # # messages.error(request, "你还未加入任何宗门")
+        return render(request, 'page_gang.html', {
+            'create_param': create_param,
+            'sort_field': sort_field,
+            'op_action': 'list_gang',
+            "wap_encrypted_param": wap_encrypted_param,
+            'gang_list': gang_lists,
+            'is_ongang': is_ongang,
+            'mygang_encrypted_param': ParamSecurity.generate_param(
+                entity_type="gang", 
+                sub_action="detail_gang", 
+                params={'gang_id':current_gang}, 
+                action="gang"
+            ),
+            'record_apply_gang': ParamSecurity.generate_param(
+                entity_type='gang',
+                sub_action='record_apply_gang',
+                params={"gang_id":gang.id},
+                action='gang',
+                # one_time=True,
+            ),
+            'level_gang': ParamSecurity.generate_param(
+                entity_type='gang',
+                sub_action='list_gang',
+                params={'sort':'level'},
+                action='gang',
+                # one_time=True,
+            ),
+            'count_gang': ParamSecurity.generate_param(
+                entity_type='gang',
+                sub_action='list_gang',
+                params={'sort':'current_count'},
+                action='gang',
+                # one_time=True,
+            ),
+            'shengwang_gang': ParamSecurity.generate_param(
+                entity_type='gang',
+                sub_action='list_gang',
+                params={'sort':'reputation'},
+                action='gang',
+                # one_time=True,
+            ),
+            'money_gang': ParamSecurity.generate_param(
+                entity_type='gang',
+                sub_action='list_gang',
+                params={'sort':'money'},
+                action='gang',
+                # one_time=True,
+            ),
+        })
 
     elif sub_action == 'detail_gang':
         player_id = request.session["player_id"]
@@ -2500,7 +3406,7 @@ def gang_handler(request, params, sub_action):
         print(has_apply_gang)
         
         
-        return render(request, 'gang_detail.html', {
+        return render(request, 'page_gang.html', {
             'create_param': create_param,
             
             'op_action': 'detail_gang',
@@ -2520,6 +3426,13 @@ def gang_handler(request, params, sub_action):
                 entity_type='gang',
                 sub_action='apply_gang',
                 params={"gang_id":gang.id},
+                action='gang',
+                # one_time=True,
+            ),
+            'exit_gang_params': ParamSecurity.generate_param(
+                entity_type='gang',
+                sub_action='exit_gang',
+                params={"gang_id":gang.id, 'player_id':player_id},
                 action='gang',
                 # one_time=True,
             ),
@@ -2598,7 +3511,7 @@ def gang_handler(request, params, sub_action):
             
             
             
-            return render(request, 'gang_detail.html', {
+            return render(request, 'page_gang.html', {
                 
                 "wap_encrypted_param": wap_encrypted_param,
                 'op_action': 'record_apply_gang',
@@ -2619,7 +3532,7 @@ def gang_handler(request, params, sub_action):
                 
                 
                 
-                return render(request, 'gang_detail.html', {
+                return render(request, 'page_gang.html', {
                     
                     "wap_encrypted_param": wap_encrypted_param,
                     'op_action': 'record_apply_gang',
@@ -2635,7 +3548,7 @@ def gang_handler(request, params, sub_action):
 
                 
                 
-                return render(request, 'gang_detail.html', {
+                return render(request, 'page_gang.html', {
                     
                     "wap_encrypted_param": wap_encrypted_param,
                     'op_action': 'record_apply_gang',
@@ -2690,6 +3603,31 @@ def gang_handler(request, params, sub_action):
 
         messages.success(request,"审批通过")
         params = ParamSecurity.generate_param("gang","record_apply_gang", {}, action="gang")
+        return redirect(reverse('wap')+f'?cmd={params}')
+
+    elif sub_action == "exit_gang":
+        player_id = params.get("player_id")
+        gang_id = params.get("gang_id")
+
+        gangmember = GangMember.objects.get(gang_id=gang_id,player_id=player_id)
+        gangmember.delete()
+        
+        banghui_message = '<a href="/wap/?cmd={}"> {} 退出了帮会~</a>'
+        # siliao_message = '你申请的宗门同意了你的加入'
+        chat_message = ChatMessage.objects.create(type_id=4,message=banghui_message,bangpai_id=gang_id)
+        # chat_message = ChatMessage.objects.create(type_id=3,message=message)
+
+        # chat_messages = [
+        #     ChatMessage(type_id=3, message=siliao_message, receiver=player_id),
+        #     ChatMessage(type_id=4, message=banghui_message, bangpai_id=gang_id),
+            
+        # ]
+
+        # 批量创建消息
+        # created_messages = ChatMessage.objects.bulk_create(chat_messages)
+
+        messages.success(request,"你已成功退出帮会")
+        params = ParamSecurity.generate_param("gang","list_gang", {}, action="gang")
         return redirect(reverse('wap')+f'?cmd={params}')
 
     elif sub_action == "reject_apply":
@@ -2847,7 +3785,7 @@ def chat_handler(request, params, sub_action):
             else:  # 其他消息
                 sender_display = (
                     f'<a href="/wap/?cmd={player_encrypted_param}">{chat.sender_name}</a>'
-                    if chat.sender_name else "未知"
+                    if chat.sender_name else "系统"
                 )
                 content = f"[{chat.get_type_id_display()}]{sender_display}: {chat.message}"
             
@@ -3115,3 +4053,733 @@ def get_messages(request):
     
     except Exception as e:
         return JsonResponse({'status': 'error', 'message': str(e)}, status=500)
+
+
+
+
+
+
+
+
+
+
+
+
+
+def get_available_tasks(player_id, npc_id):
+    """获取可接取的任务（带缓存）"""
+    # 获取当前NPC提供的任务
+    from .models import Task
+    tasks = Task.objects.filter(accept_npc_id=npc_id).values('id').all()
+    task_ids = [t['id'] for t in tasks]
+    
+    # 获取玩家任务状态缓存
+    player_tasks = CacheManager.get_player_tasks(player_id)
+    player_task_ids = [pt['task_id'] for pt in player_tasks]
+    
+    available = []
+    for task_id in task_ids:
+        # 检查是否已存在任务
+        if task_id in player_task_ids:
+            continue
+            
+        # 检查前置任务
+        task_config = CacheManager.get_task_config(task_id)
+        if not task_config:
+            continue
+            
+        if task_config.get('prev_task_id'):
+            # 检查前置任务是否完成
+            prev_task_id = task_config['prev_task_id']
+            prev_completed = any(
+                pt['task_id'] == prev_task_id 
+                for pt in player_tasks
+                if pt.get('status') == 2  # 假设状态2是已完成
+            )
+            if not prev_completed: 
+                continue
+        
+        # 添加任务基本信息
+        available.append({
+            'id': task_id,
+            'name': task_config['name'],
+            'description': task_config['description'],
+        })
+    
+    return available
+
+def get_completable_tasks(player_id, npc_id):
+    """获取可提交的任务（带缓存）"""
+    from .models import Task
+    tasks = Task.objects.filter(submit_npc_id=npc_id).values('id').all()
+    task_ids = [t['id'] for t in tasks]
+    
+    # 获取玩家任务状态缓存
+    player_tasks = CacheManager.get_player_tasks(player_id)
+    player_task_map = {pt['task_id']: pt for pt in player_tasks}
+    
+    completable = []
+    for task_id in task_ids:
+        player_task = player_task_map.get(task_id)
+        if not player_task or player_task.get('status') != 1:  # 非进行中
+            continue
+        
+        task_config = CacheManager.get_task_config(task_id)
+        if task_config:
+            completable.append({
+                'task': {
+                    'id': task_id,
+                    'name': task_config['name'],
+                    'description': task_config['description']
+                },
+                'player_task_id': player_task['id']
+            })
+
+        # 检查任务是否完成
+        if check_task_completion(player_task['id']):
+            task_config = CacheManager.get_task_config(task_id)
+            if task_config:
+                completable.append({
+                    'task': {
+                        'id': task_id,
+                        'name': task_config['name'],
+                        'description': task_config['description']
+                    },
+                    'player_task_id': player_task['id']
+                })
+    
+    return completable
+
+def is_task_complete(player_task_id):
+    """检查任务是否完成"""
+    # 获取任务进度
+    progresses = PlayerTaskProcess.objects.filter(
+        player_task_id=player_task_id
+    ).values('target_type', 'target_id', 'current')
+    
+    # 获取任务配置
+    # player_task = PlayerTask.objects.filter(id=player_task_id).first()
+    player_task = PlayerTask.objects.select_related('task').get(id=player_task_id)
+    if not player_task:
+        return False
+        
+    task_config = CacheManager.get_task_config(player_task.task_id)
+    if not task_config:
+        return False
+    
+    # 检查进度
+    # progress_map = {(p['target_type'], p['target_id']): p['current'] for p in progresses}
+
+    # progress_map = {}  # 初始化空字典
+
+    # for p in progresses:
+    #     key = (p['target_type'], p['target_id'])  # 创建元组键
+    #     value = p['current']                      # 获取当前值
+    #     progress_map[key] = value    
+    
+    # for target in task_config['targets']:
+    #     key = (target['target_type'], target['target_id'])
+    #     if progress_map.get(key, 0) < target['amount']:
+    #         return False
+        # 检查每个目标进度
+    for target in task_config['targets']:
+        found = False
+        for progress in progresses:
+            # 统一使用字符串键访问
+            if (str(progress['target_type']) == str(target['target_type']) and 
+                str(progress['target_id']) == str(target['target_id'])):
+                if progress['current_count'] < target['amount']:
+                    return False
+                found = True
+                break
+        
+        # 如果找不到对应的进度记录
+        if not found:
+            return False
+            
+    return True
+
+@transaction.atomic
+def accept_task(request, player, task_id, npc_id):
+    """接取任务"""
+    task_config = CacheManager.get_task_config(task_id)
+    if not task_config:
+        messages.error(request, "任务不存在")
+        return redirect('npc_interaction', npc_id=npc_id)
+    
+    # 创建玩家任务
+    player_task = PlayerTask.objects.create(
+        player=player,
+        task_id=task_id,
+        status=1,
+        started_at=timezone.now()
+    )
+    
+    # 创建任务进度
+    for target in task_config['targets']:
+        PlayerTaskProcess.objects.create(
+            player_task=player_task,
+            target_type=target['target_type'],
+            target_id=target['target_id'],
+            current=0
+        )
+    
+    # 清除玩家任务缓存
+    CacheManager.invalidate_player_tasks(player.id)
+    
+    messages.success(request, f"已接取任务: {task_config['name']}")
+    
+    encrypted_param = ParamSecurity.generate_param(
+        entity_type='npc',
+        sub_action='interact',
+        params={'player_id': player.id, 'npc_id': npc_id},
+        action='npc'
+    )
+
+    return redirect(reverse('wap') + f"?cmd={encrypted_param}")
+
+@transaction.atomic
+def submit_task(request, player, task_id, npc_id):
+    """提交任务"""
+    try:
+        player_task = PlayerTask.objects.get(
+            player=player,
+            task_id=task_id,
+            status=1
+        )
+    except PlayerTask.DoesNotExist:
+        messages.error(request, "任务不存在或未进行中")
+        return redirect('npc_interaction', npc_id=npc_id)
+    
+    # 验证任务完成状态
+    if not check_task_completion(player_task.id):
+        messages.error(request, "任务尚未完成")
+        return redirect('npc_interaction', npc_id=npc_id)
+    
+    # 获取任务配置
+    task_config = CacheManager.get_task_config(task_id)
+    if not task_config:
+        messages.error(request, "任务配置错误")
+        return redirect('npc_interaction', npc_id=npc_id)
+    
+    # 发放奖励
+    rewards = task_config['rewards']
+    player.money += rewards.get('money', 0)
+    player.exp += rewards.get('exp', 0)
+    player.save()
+    
+    # 更新任务状态
+    player_task.status = 2  # 已完成
+    player_task.completed_at = timezone.now()
+    player_task.save()
+    
+    # 清除玩家任务缓存
+    CacheManager.invalidate_player_tasks(player.id)
+    
+    # 处理主线任务链
+    next_task = None
+    if task_config['theme'] == 1:  # 主线任务
+        next_task = activate_next_chain(player, task_id)
+    
+    context = {
+        'task': task_config,
+        'rewards': rewards,
+        'next_task': next_task
+    }
+    
+    return render(request, 'task_completion.html', context)
+
+def activate_next_chain(player, completed_task_id):
+    """自动激活后续主线任务"""
+    # 查找后续任务
+    next_task = Task.objects.filter(
+        prev_task_id=completed_task_id
+    ).first()
+    
+    if not next_task:
+        return None
+    
+    # 避免重复接取
+    if PlayerTask.objects.filter(
+        player=player, 
+        task=next_task,
+        status__in=[1, 2]  # 进行中或已完成
+    ).exists():
+        return None
+    
+    # 创建新任务
+    new_player_task = PlayerTask.objects.create(
+        player=player,
+        task=next_task,
+        status=1
+    )
+    
+    # 创建进度
+    task_items = TaskItem.objects.filter(task=next_task)
+    for item in task_items:
+        PlayerTaskProcess.objects.create(
+            player_task=new_player_task,
+            target_type=item.target_type,
+            target_id=item.target_id,
+            current=0
+        )
+    
+    # 清除玩家任务缓存
+    CacheManager.invalidate_player_tasks(player.id)
+    
+    # 返回任务基本信息
+    return {
+        'id': next_task.id,
+        'name': next_task.name,
+        'description': next_task.description,
+        'accept_npc_id': next_task.accept_npc_id
+    }
+
+def player_tasks(request):
+    """玩家任务列表视图"""
+    player = request.user.player
+    
+    # 从缓存获取玩家任务
+    player_tasks = CacheManager.get_player_tasks(player.id)
+    if not player_tasks:
+        return render(request, 'player_tasks.html', {
+            'active_tasks': []
+        })
+    
+    # 获取任务详情
+    task_details = []
+    for pt in player_tasks:
+        task_config = CacheManager.get_task_config(pt['task_id'])
+        if not task_config:
+            continue
+            
+        # 获取任务进度
+        progresses = PlayerTaskProcess.objects.filter(
+            player_task_id=pt['id']
+        ).values('target_type', 'target_id', 'current')
+        
+        # 获取进度详情
+        progress_details = []
+        for progress in progresses:
+            target_type = progress['target_type']
+            target_id = progress['target_id']
+            
+            # 从缓存获取目标名称
+            target_name = CacheManager.get_target_name(target_type, target_id)
+            
+            # 获取目标要求数量
+            required = next((
+                t['amount'] for t in task_config['targets'] 
+                if t['target_type'] == target_type and t['target_id'] == target_id
+            ), 1)
+            
+            progress_details.append({
+                'target_type': target_type,
+                'target_id': target_id,
+                'target_name': target_name,
+                'current': progress['current'],
+                'required': required
+            })
+        
+        # 计算总进度
+        total_required = sum(d['required'] for d in progress_details)
+        total_completed = sum(min(d['current'], d['required']) for d in progress_details)
+        progress_percent = int((total_completed / total_required * 100) if total_required > 0 else 100)
+        
+        task_details.append({
+            'task': {
+                'id': task_config['id'],
+                'name': task_config['name'],
+                'description': task_config['description'],
+                'status': task_config['status'],
+
+            },
+            'progresses': progress_details,
+            'progress_percent': progress_percent
+        })
+    
+    context = {
+        'active_tasks': task_details
+    }
+    
+    return render(request, 'player_tasks.html', context)
+
+@transaction.atomic
+def combat_result(request, monster_id):
+    """战斗结果处理视图"""
+    player = request.user.player
+    
+    # 从缓存获取怪物信息
+    monster_info = CacheManager.get_npc_info(monster_id)
+    if not monster_info or monster_info.get('npc_type') != 'monster':
+        messages.error(request, "怪物不存在")
+        return redirect('game_map')
+    
+    # 处理战斗逻辑
+    is_victory = calculate_battle_result(player, monster_info)
+    
+    if is_victory:
+        # 更新玩家任务进度
+        updated = PlayerTaskProcess.objects.filter(
+            player_task__player=player,
+            player_task__status=1,  # 进行中任务
+            target_type=2,          # 怪物类型
+            target_id=monster_id    # 特定怪物
+        ).update(current=F('current') + 1)
+        
+        if updated > 0:
+            # 清除玩家任务缓存
+            CacheManager.invalidate_player_tasks(player.id)
+        
+        # 发放基础奖励
+        exp_reward = monster_info.get('exp_reward', 0)
+        gold_reward = monster_info.get('gold_reward', 0)
+        player.exp += exp_reward
+        player.money += gold_reward
+        
+        # 处理掉落物品
+        drop_results = []
+        drop_info = monster_info.get('drop_info', {})
+        if drop_info:
+            # 掉落金币
+            gold_min = drop_info.get('gold_min', 0)
+            gold_max = drop_info.get('gold_max', 0)
+            gold_drop = random.randint(gold_min, gold_max) if gold_min < gold_max else gold_min
+            if gold_drop > 0:
+                player.money += gold_drop
+                drop_results.append(f"金币: {gold_drop}")
+            
+            # 掉落物品
+            for item in drop_info.get('items', []):
+                if random.random() <= item['drop_rate']:
+                    count = random.randint(
+                        item.get('min_count', 1),
+                        item.get('max_count', 1)
+                    )
+                    # 添加到玩家背包（简化处理）
+                    item_name = CacheManager.get_target_name(1, item['item_id'])
+                    drop_results.append(f"{item_name} × {count}")
+        
+        player.save()
+        
+        # 构建成功消息
+        message = f"成功击败 {monster_info['name']}！获得经验:{exp_reward}, 金钱:{gold_reward}"
+        if drop_results:
+            message += f"，掉落: {', '.join(drop_results)}"
+        
+        messages.success(request, message)
+    else:
+        messages.error(request, f"挑战 {monster_info['name']} 失败")
+    
+    return redirect('game_map')
+
+def calculate_battle_result(player, monster_info):
+    """计算战斗结果（简化版）"""
+    # 实际游戏中需要实现完整的战斗逻辑
+    player_attack = player.attack
+    player_defense = player.defense
+    monster_attack = monster_info['attack']
+    monster_defense = monster_info['defense']
+    
+    # 简单战斗算法
+    player_damage = max(1, player_attack - monster_defense)
+    monster_damage = max(1, monster_attack - player_defense)
+    
+    # 计算战斗回合
+    player_hp = player.hp
+    monster_hp = monster_info['hp']
+    
+    while player_hp > 0 and monster_hp > 0:
+        monster_hp -= player_damage
+        if monster_hp <= 0:
+            return True
+            
+        player_hp -= monster_damage
+        if player_hp <= 0:
+            return False
+    
+    return False  # 默认失败
+
+def check_task_completion(player_task_id):
+    """检查任务是否完成（优化版）"""
+    # 一次性获取所有进度
+    progresses = PlayerTaskProcess.objects.filter(
+        player_task_id=player_task_id
+    ).values('target_type', 'target_id', 'current_count')
+    
+    # 获取任务配置
+    player_task = PlayerTask.objects.select_related('task').get(id=player_task_id)
+    task_config = CacheManager.get_task_config(player_task.task_id)
+
+    # 检查每个目标进度
+    for target in task_config['targets']:
+        found = False
+        print(task_config['targets'])
+        for progress in progresses:
+            if (progress['target_type'] == target['target_type'] and 
+                progress['target_id'] == target['target_id']):
+                if progress['current_count'] < target['amount']:
+                    return False
+                found = True
+                break
+        
+        # 如果找不到对应的进度记录
+        if not found:
+            return False
+            
+    return True
+
+
+# 优化后的获取任务函数
+def get_npc_tasks(player_id, npc_id):
+    """获取NPC相关的所有任务（一次查询完成）"""
+    player = Player.objects.get(id=player_id)
+    # 获取玩家所有任务状态
+    player_tasks = CacheManager.get_player_tasks(player_id)
+    player_task_map = {pt['task_id']: pt for pt in player_tasks}
+    
+    # 获取NPC相关的所有任务
+    tasks = Task.objects.filter(
+        models.Q(accept_npc_id=npc_id) | models.Q(submit_npc_id=npc_id)
+    ).select_related('accept_npc', 'submit_npc').prefetch_related('targets')
+    
+    available_tasks = []
+    completable_tasks = []
+    in_progress_tasks = []
+    
+    for task in tasks:
+        task_id = task.id
+        task_config = CacheManager.get_task_config(task_id)
+        
+        # 检查是否可接取
+        if task.accept_npc_id == npc_id:
+            # 检查是否已存在任务
+            if task_id not in player_task_map:
+                # 检查前置任务
+                if task.prev_task_id:
+                    prev_completed = any(
+                        pt['task_id'] == task.prev_task_id and pt['status'] == 2
+                        for pt in player_tasks
+                    )
+                    if not prev_completed:
+                        continue
+                
+                # 检查触发条件
+                trigger_conditions = task_config.get('trigger_conditions', {})
+                if not check_trigger_conditions(player, trigger_conditions):
+                    continue
+
+                available_tasks.append({
+                    'id': task_id,
+                    'name': task.name,
+                    'description': task.description,
+                    'cmd_params': ParamSecurity.generate_param(
+                        entity_type='task',
+                        sub_action='detail_task',
+                        params={'task_id': task_id, 'status':'available'},
+                        action='task'
+                    )
+                })
+        
+        # 检查是否可提交
+        if task.submit_npc_id == npc_id:
+            player_task = player_task_map.get(task_id)
+            if player_task and player_task['status'] == 1:  # 进行中
+                # 优化：只对可提交任务检查完成状态
+                if check_task_completion(player_task['id']):
+                    completable_tasks.append({
+                        'task': {
+                            'id': task_id,
+                            'name': task.name,
+                            'description': task.description
+                        },
+                        'player_task_id': player_task['id'],
+                        'submit_params': ParamSecurity.generate_param(
+                            entity_type='task',
+                            sub_action='submit_task',
+                            params={
+                                'player_task_id': player_task['id'],
+                                'npc_id': npc_id
+                            },
+                            action='task'
+                        )
+                    })
+                else:
+                    # 添加到进行中任务
+                    in_progress_tasks.append({
+                        'id': task_id,
+                        'name': task.name,
+                        'description': task.description,
+                        'cmd_params': ParamSecurity.generate_param(
+                            entity_type='task',
+                            sub_action='detail_task',
+                            params={'task_id': task_id,'status':'in_progress'},
+                            action='task'
+                        )
+                    })
+    
+    return available_tasks, completable_tasks, in_progress_tasks
+
+
+def check_trigger_conditions(player, conditions):
+    """检查触发条件是否满足"""
+    if not conditions:
+        return True
+    '''    
+    trigger_conditions={
+        'min_level': 50,
+        'completed_tasks': [201, 202, 203],  # 需要完成的任务ID列表
+        'required_items': {
+            301: 1                          # 特殊道具ID和数量
+        },
+        'time_range': {                  # 夜间巡逻任务。只能在晚上20:00-22:00接取
+            'start': '20:00',
+            'end': '22:00'
+        },
+        'required_gang': 1001  # 帮派ID        # 只有本帮派成员才能接取
+    '''
+
+    # 1. 检查等级条件
+    if 'min_level' in conditions and player.level < conditions['min_level']:
+        return False
+    if 'max_level' in conditions and player.level > conditions['max_level']:
+        return False
+    
+    # 2. 检查任务条件
+    if 'completed_tasks' in conditions:
+        completed_tasks = set(PlayerTask.objects.filter(
+            player=player,
+            status=2,  # 已完成
+            task_id__in=conditions['completed_tasks']
+        ).values_list('task_id', flat=True))
+        
+        if len(completed_tasks) < len(conditions['completed_tasks']):
+            return False
+    
+    # 3. 检查物品条件
+    if 'required_items' in conditions:
+        from game.models import PlayerItem
+        for item_id, amount in conditions['required_items'].items():
+            item_count = PlayerItem.objects.filter(
+                player=player,
+                item_id=item_id
+            ).aggregate(total=models.Sum('count'))['total'] or 0
+            if item_count < amount:
+                return False
+    
+    # 4. 检查帮派条件
+    if 'required_gang' in conditions:
+        if not player.gang_id or player.gang_id != conditions['required_gang']:
+            return False
+
+    # 5. 检查时间条件
+    if 'time_range' in conditions:
+        now = timezone.localtime().time()
+        start_time = datetime.strptime(conditions['time_range']['start'], '%H:%M').time()
+        end_time = datetime.strptime(conditions['time_range']['end'], '%H:%M').time()
+        
+        if not (start_time <= now <= end_time):
+            return False
+    
+    return True
+
+def get_task_progress(player_id, task_id):
+    """获取任务进度详情
+    
+    Args:
+        player_task_id (int): 玩家任务实例ID
+        
+    Returns:
+        list: 包含每个目标进度的字典列表，格式:
+              [{
+                'target_type': int, 
+                'target_id': int,
+                'current_count': int,
+                'required_count': int,
+                'completed': bool
+              }]
+    """
+    # 获取任务配置
+    player_task = PlayerTask.objects.select_related('task').get(player_id=player_id,task_id=task_id)
+    task_config = CacheManager.get_task_config(player_task.task_id)
+    targets = task_config.get('targets', [])
+    
+    # 获取所有进度记录
+    progresses = PlayerTaskProcess.objects.filter(
+        player_task_id=player_task.id
+    ).values('target_type', 'target_id', 'current_count')
+    
+    # 创建进度字典以便快速查找
+    progress_dict = {
+        (p['target_type'], p['target_id']): p['current_count']
+        for p in progresses
+    }
+    
+    # 构建进度详情列表
+    progress_details = []
+    
+    for target in targets:
+        target_type = target['target_type']
+        target_id = target['target_id']
+        required = target['amount']
+        
+        # 获取当前进度，如果不存在则为0
+        current = progress_dict.get((target_type, target_id), 0)
+        
+        progress_details.append({
+            'target_type': target_type,
+            'target_id': target_id,
+            'current_count': current,
+            'required_count': required,
+            'completed': current >= required
+        })
+    
+    return progress_details
+
+
+def update_task_progress(player_id, target_id, target_type, amount=1):
+    """更新玩家任务进度
+    
+    Args:
+        player_id (int): 玩家ID
+        target_id (int): 目标ID（如怪物ID）
+        target_type (int): 目标类型（2=怪物）
+    """
+    # 获取玩家所有进行中的任务
+    in_progress_tasks = PlayerTask.objects.filter(
+        player_id=player_id,
+        status=1
+    ).select_related('task')
+    print(f"获取进行中的任务{in_progress_tasks}")
+    # continue
+    # 遍历每个任务
+    for player_task in in_progress_tasks:
+        # 获取任务配置
+        task_config = CacheManager.get_task_config(player_task.task_id)
+        targets = task_config.get('targets', [])
+        
+        # 检查当前目标是否是该任务的目标
+        for target in targets:
+            if target['target_type'] == target_type and target['target_id'] == target_id:
+                # 更新或创建进度记录
+                process, created = PlayerTaskProcess.objects.get_or_create(
+                    player_task=player_task,
+                    target_type=target_type,
+                    target_id=target_id,
+                    defaults={'current_count': 0}
+                )
+                
+                # 增加进度（不超过所需数量）
+                required = target['amount']
+                # if process.current_count < required:
+                process.current_count += 1
+                process.save()
+                
+                print(f"更新任务进度: 玩家{player_id} 任务{player_task.task_id} "
+                        f"目标{target_id} 进度{process.current_count}/{required}")
+                
+                # 检查任务是否已完成
+                # if check_task_completion(player_task.id):
+                #     player_task.status = 'completed'
+                #     player_task.save()
+                #     print(f"任务完成: 玩家{player_id} 任务{player_task.task_id}")

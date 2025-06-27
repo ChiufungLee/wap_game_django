@@ -28,7 +28,8 @@ urlpatterns = [
     path('index/', views.index, name = "index"),
     path('logout/', admin_views.logout, name = "logout"),
     path('wapadmin/', admin_views.admin_views, name='admin_view'),
-    path('error/', admin_views.handle_error, name='error'),
+    path('game_error/', admin_views.game_error, name='game_error'),
+    path('wap_error/', views.handle_error, name='wap_error'),
     path('game/', views.game_page, name='game_page'),
 
     path('wap/', views.wap, name='wap'),

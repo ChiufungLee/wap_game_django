@@ -263,7 +263,8 @@ def login(request):
                 
                 # 创建持久化会话令牌
                 response = redirect('/index')
-                
+            
+
                 # 添加持久化cookie（可选）
                 if request.POST.get('remember_me'):
                     # 生成唯一令牌
@@ -313,10 +314,10 @@ def logout(request):
 
 
 
-def handle_error(request):
+def game_error(request):
     # message = message
     error_message = request.GET.get('error', '未知错误，请重新登录')
-    return render(request, 'error.html', {'error_message':error_message})
+    return render(request, 'game_error.html', {'error_message':error_message})
     # return render(request, 'error.html', {})
 
 def admin_views(request):
@@ -363,7 +364,7 @@ def reset_password(request):
     
     if not secure_params:
         # return JsonResponse({'error': '非法参数'})
-        return redirect(reverse('error') + '?error=非法参数')
+        return redirect(reverse('game_error') + '?error=非法参数')
     print(secure_params)
 
     return render(request, 'admin/wap_admin.html', {})

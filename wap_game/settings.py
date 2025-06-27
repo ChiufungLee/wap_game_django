@@ -156,6 +156,16 @@ SESSION_COOKIE_HTTPONLY = True
 SESSION_EXPIRE_AT_BROWSER_CLOSE = False  # 浏览器关闭后保留会话
 
 
+# 缓存TTL设置（秒）
+CACHE_TTL = {
+    'NPC_INFO': 3600 * 24,      # 24小时
+    'TASK_CONFIG': 3600 * 12,   # 12小时
+    'PLAYER_TASKS': 300,         # 5分钟
+    'TARGET_NAMES': 3600,        # 1小时
+}
+
+
+
 # Password validation
 # https://docs.djangoproject.com/en/5.2/ref/settings/#auth-password-validators
 

@@ -2,9 +2,6 @@
 {% extends 'base.html' %}
 
 
-
-{% block title %}首页{% endblock %}
-
 {% block css %}
 <script type="text/javascript">
     function login() {
@@ -67,7 +64,7 @@
 <div>
     <div>
         <p><a href="">这是一条置顶公告</a></p>
-        <p> [{{map.name}}(ID:{{map.id}})] <a href="/wap/?cmd={{chat_encrypted_param}}">聊天</a> | <a href="">商城</a> | <a href="">刷新</a></p>
+        <p> [{{map}}] <a href="/wap/?cmd={{chat_encrypted_param}}">聊天</a> | <a href="/wap/?cmd={{task_encrypted_param}}">任务</a> | <a href="/wap/?cmd={{shop_encrypted_param}}">商城</a></p>
     </div>
 -------------------------------
     <div>
@@ -118,37 +115,11 @@
 
     {% endfor %}
     {% endif %}</p>
-<p>{% if items %}地上掉落：{% for item in items %}<a href="/wap/?cmd={{ item.cmd_params }}">{{ item.name }} {{item.id}}</a>、{% endfor %}{% endif %}</p>
+<p>{% if items %}地上掉落：{% for item in items %}<a href="/wap/?cmd={{ item.cmd_params }}">{{ item.name }} ({{item.level}}级)</a>、{% endfor %}{% endif %}</p>
 <p>{% if map_players %}附近还有：{% for player in map_players %}<a href="/wap/?cmd={{ player.cmd_params }}">{{ player.name }}</a>、{% endfor %}{% endif %}</p>
 </div>
 
     <div>
-        <!-- <p>请选择出口：</p>
-        {% if map.north %}
-            <p><span>北：<a href="">{{map.north}}</a></span> 
-        {% else %}
-            <p><span></span>
-        {% endif %}
-        {% if map.east %}
-            <p><span>东：<a href="">{{map.east}}</a></span> 
-        {% else %}
-            <p><span></span>
-        {% endif %}
-
-        {% if map.south %}
-            <p><span>南：<a href="">{{map.south}}</a></span> 
-        {% else %}
-            <p><span></span>
-        {% endif %} 
-
-        {% if map.west %}
-            <p><span>西：<a href="">{{map.west}}</a></span> 
-        {% else %}
-            <p><span></span>
-        {% endif %} -->
-
-        <!-- <span>东：<a href="">京城</a></p></span>
-        <p><span>西：<a href="">{{map.west}}</a> </span> <span>南：<a href="">泉州</a></p></span> -->
 
         <div class="section">
             <p>请选择出口：</p>

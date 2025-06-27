@@ -1,0 +1,101 @@
+{% extends 'base.html' %}
+
+{% load static %}
+
+{% block content %}
+<div>
+{% if messages %}
+    {% for message in messages %}
+        <div class="message {% if message.tags %}{{ message.tags }}{% endif %}">
+            {{ message }}
+        </div>
+    {% endfor %}
+{% endif %}
+</div>
+
+{% if op_action == 'detail_npc' %}
+    <div class="header">
+        <p>名称：{{ npc.name }}</p>
+        <p>描述：{{ npc.description }}</p>
+        
+        {% if npc.npc_type == 'monster' %}
+        <p>等级：{{ npc.level }}级</p>
+        <p>生命：{{ npc.hp }}</p>
+        <p>攻击：{{ npc.attack }}</p>
+        <p>防御：{{ npc.defense }}</p>
+        <p>击杀经验：{{ npc.exp_reward }}</p>
+        <p>击杀奖励：{{ npc.gold_reward }}</p>
+
+            {% if npc.drop_info %}
+                <div class="drop-info">
+                <p>可能掉落:
+
+                    {% for drop in npc.drop_info %}
+
+                    <a href="/wap/?cmd={{drop.item_params}}">{{ drop.item_name }} </a>、
+
+                    {% endfor %}
+                </p>
+                </div>
+            {% endif %}
+        <p><a href="/wap/?cmd={{attack_encrypted_param}}">攻击</a></p>
+        {% endif %}
+    </div>
+    
+    <div class="dialog-box">
+        <div class="dialog-text">
+            {{ greeting }}
+        </div>
+        
+        {% if available_tasks %}
+            <div class="section">
+                {% if available_tasks %}
+                    <p></p>
+                        {% for task in available_tasks %}
+                                <div class="task-title">可接取：<a href="/wap/?cmd={{task.cmd_params}}">{{ task.name }}</a></div>
+                        {% endfor %}
+                {% endif %}
+
+                  <!-- 进行中任务 -->
+
+
+            </div>
+        {% endif %}
+           {% if in_progress_tasks %}
+
+
+    {% for task in in_progress_tasks %}
+    <p>
+        进行中：<a href="?cmd={{ task.cmd_params }}">{{ task.name }}</a>
+    </p>
+    {% endfor %}
+
+    {% endif %} 
+        <!-- <form method="post" action=".">
+            {% csrf_token %}
+            <input type="hidden" name="action" value="continue">
+            <div class="form-actions">
+                <button type="submit" class="btn btn-continue">继续对话</button>
+            </div>
+        </form> -->
+          <!-- <form method="post" action="/wap/?cmd={{ continue_params }}">
+            {% csrf_token %}
+             继续对话的加密参数 
+            <input type="hidden" name="encrypted_action" value="{{ continue_params }}">
+            <div class="form-actions">
+                <button type="submit" class="btn btn-continue">继续对话</button>
+            </div>
+        </form> -->
+
+    </div>
+
+{% elif op_action == 'list_task' %}
+
+{% endif %}
+
+
+<a href="#" onclick="goBack()">返回上页</a><br>
+<a href="/wap/?cmd={{ wap_encrypted_param }}">返回游戏</a>
+
+
+{% endblock %}

@@ -1,0 +1,109 @@
+{% extends 'base.html' %}
+
+{% block css %}
+
+{% endblock %}
+
+{% block content %}
+
+<p id="errmsg" class="red">{{error_message}}</p>
+{% if messages %}
+<ul class="messages">
+    {% for message in messages %}
+    <li class="{{ message.tags }}">{{ message }}</li>
+    {% endfor %}
+</ul>
+{% endif %}
+
+
+{% if op_action == 'list_task' %}
+ <p>[任务列表]</p>
+    {% if active_tasks %}
+       
+            {% for task_data in active_tasks %}
+                <P>
+                    {{ forloop.counter }}. <a href="/wap/?cmd={{ task_data.cmd_params }}">{{ task_data.task.name }}</a>
+
+                </P>
+                <!-- <li class="task-item">
+                    <div class="task-title">{{ task_data.task.name }}</div>
+                    <div class="task-desc">{{ task_data.task.description }}</div>
+                    
+                    <ul class="task-targets">
+                        {% for progress in task_data.progresses %}
+                            <li class="target-item">
+                                {% if progress.target_type == 1 %}
+                                    收集物品: {{ progress.target_name }} 
+                                {% elif progress.target_type == 2 %}
+                                    击败怪物: {{ progress.target_name }} 
+                                {% elif progress.target_type == 3 %}
+                                    对话NPC: {{ progress.target_name }} 
+                                {% else %}
+                                    未知目标: {{ progress.target_name }}
+                                {% endif %}
+                                ({{ progress.current }}/{{ progress.required }})
+                            </li>
+                        {% endfor %}
+                    </ul>
+                    
+                    <div class="progress-container">
+                        <div class="progress-bar">
+                             <div class="progress-fill" style="width: {{ task_data.progress_percent }}%"></div> 
+                        </div>
+                        <div class="progress-text">{{ task_data.progress_percent }}%</div>
+                    </div>
+                </li> -->
+            {% endfor %}
+        </ul>
+    {% else %}
+        <div class="task-item">
+            <p>当前没有进行中的任务</p>
+            <p>去拜访NPC接取新任务吧！</p>
+        </div>
+    {% endif %}
+
+
+
+{% elif op_action == 'detail_task' %}
+	<p>【任务详情】</p>
+
+		<p>名称：{{ task.name }}</p>
+		{% if task.description %}<p>描述：{{ task.description }}</p>{% endif %}
+        <!-- <p>NPC：</p> -->
+		<p>{{ npc_name.name }}：{{ task.accept_dialog|safe }}</p>
+		<p>奖励经验：{{ task.rewards.exp }}</p>
+		<p>奖励金钱：{{ task.rewards.money }}</p>
+		{% if task_target %}
+			{% if task_target.target_type == 1 %}
+				<p>任务要求：收集{{ task_target.target_name }}（{{ current_count }}/{{ task_target.amount }}）个 </p>
+			{% endif %}
+			{% if task_target.target_type == 2 %}
+				<p>任务要求：击杀{{task_target.target_name}}（{{ current_count }}/{{ task_target.amount}}）只</p>
+			{% endif %}
+            {% if task_target.target_type == 3 %}
+				<p>任务要求：去 {{task.map.name}} 找 {{task_target.target_name}} 聊聊</p>
+			{% endif %}
+		{% endif %}
+
+
+        {% if task_status == 'available' %}
+		<p><a href="/wap/?cmd={{accept_params}}">接受任务</a></p>
+        {% endif %}
+        {% if task_status == 'in_progress' %}
+		<!-- <p><a href="/wap/?cmd={{giveup_params}}">放弃任务</a></p> -->
+        {% endif %}
+        {% if task_status == 'complete' and is_page_pre_npc %}
+
+		<p><a href="/wap/?cmd={{complete_params}}">提交任务</a></p>
+        {% endif %}
+
+
+{% else %}
+
+{% endif %}
+
+
+<p><a href="#" onclick="goBack()">返回上页</a></p>
+<p><a href="/wap/?cmd={{wap_encrypted_param}}">返回首页</a></p>
+
+{% endblock %}

@@ -168,28 +168,90 @@ class SecureParamMiddleware(MiddlewareMixin):
                 if key in params_source:
                     value = params_source[key]
                     if self.is_encrypted_param(value):
-                        # 尝试解密参数
-                        decrypted = ParamSecurity.decode_param(value)
-                        print(f"decrypted:{decrypted}")
-                        if decrypted:
-                            # 直接存储解密后的参数字典
+                        result = ParamSecurity.decode_param(value)
+                        if isinstance(result, dict) and 'error' not in result:
+                            # 统一数据结构处理
+                            param_source = result
+                            if 'param_dict' in result:
+                                param_source = result['param_dict']
+                            
                             request.secure_params[key] = {
-                                'entity': decrypted['entity_type'],
-                                'sub_action': decrypted['sub_action'],
-                                'params': decrypted['params']  # 包含所有参数
+                                'entity': param_source.get('entity_type'),
+                                'sub_action': param_source.get('sub_action'),
+                                'params': param_source.get('params', {})
                             }
-                            request.secure_data[key] = decrypted   
-                            # 自动续期主参数(cmd)
+                            request.secure_data[key] = result
+                            
                             if key == 'cmd':
                                 self.renew_param_if_needed(request, value)
-                        else:
-                            base_url = reverse('error')
-                            query_string = urlencode({'error': '长时间未操作，请重新登录'})
-                            return redirect(f'{base_url}?{query_string}')
+                        
+                        # 处理解密失败的情况
+                        elif isinstance(result, dict) and 'error' in result:
+                            error_type = result['error']
+                            error_message = "操作失败"
+                            
+                            if error_type == 'one_time_used':
+                                error_message = "该链接已失效，请勿重复使用"
+                                return self.redirect_to_waperror_page(request, error_message)
+                            elif error_type == 'expired':
+                                error_message = "链接已过期，请重新操作"
+                            elif error_type == 'cache_missing':
+                                error_message = "会话已失效，请重新登录"
+                            
+                            # 跳转到自定义错误页面
+                            return self.redirect_to_gamerror_page(request, error_message)
+
+                        # 尝试解密参数
+                        # decrypted = ParamSecurity.decode_param(value)
+                        # print(f"decrypted:{decrypted}")
+                        # if decrypted:
+
+                        #     param_source = decrypted
+                            
+                        #     # 如果是普通参数，从param_dict中提取实际参数
+                        #     if 'param_dict' in decrypted:
+                        #         param_source = decrypted['param_dict']
+                            
+                        #     # 安全访问参数
+                        #     request.secure_params[key] = {
+                        #         'entity': param_source.get('entity_type'),
+                        #         'sub_action': param_source.get('sub_action'),
+                        #         'params': param_source.get('params', {})
+                        #     }
+
+
+                        #     # # 直接存储解密后的参数字典
+                        #     # request.secure_params[key] = {
+                        #     #     'entity': decrypted['entity_type'],
+                        #     #     'sub_action': decrypted['sub_action'],
+                        #     #     'params': decrypted['params']  # 包含所有参数
+                        #     # }
+                        #     request.secure_data[key] = decrypted   
+                        #     # 自动续期主参数(cmd)
+                        #     # if key == 'cmd':
+                        #     #     self.renew_param_if_needed(request, value)
+                        # else:
+                        #     base_url = reverse('error')
+                        #     query_string = urlencode({'error': '长时间未操作，请重新登录'})
+                        #     return redirect(f'{base_url}?{query_string}')
 
                             
         
         return None
+
+    def redirect_to_gamerror_page(self, request, error_message):
+        """跳转到自定义错误页面"""
+        # 方法1：重定向到专门错误页面
+        base_url = reverse('wap_error')
+        query_string = urlencode({'error': error_message})
+        return redirect('login')
+
+    def redirect_to_waperror_page(self, request, error_message):
+        """跳转到自定义错误页面"""
+        # 方法1：重定向到专门错误页面
+        base_url = reverse('wap_error')
+        query_string = urlencode({'error': error_message})
+        return redirect('wap_error')
 
     def renew_param_if_needed(self, request, original_value):
         """检查并续期即将过期的参数"""

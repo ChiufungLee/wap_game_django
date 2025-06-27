@@ -1,0 +1,100 @@
+{% extends 'base.html' %}
+
+{% block css %}
+<style>
+.shop_width {
+    width: 40px;
+}
+
+</style>
+{% endblock %}
+
+{% block content %}
+{% if messages %}
+<ul class="messages">
+    {% for message in messages %}
+    <li class="{{ message.tags }}">{{ message }}</li>
+    {% endfor %}
+</ul>
+{% endif %}
+
+
+{% if op_action == 'list_shop' %}
+{% if shop_type == 2 %}
+<P><span class="shop_width">序号</span><span class="shop_width">物品</span><span class="shop_width">价格</span><span class="shop_width">操作</span></P>
+    {% for item in formatted_goods %}
+    <p>{{ forloop.counter}}、<a href="#">{{item.item_name}}</a> {{item.price}}金元 <input value="1"><a href="#">购买</a></p>
+
+    {% endfor %}
+{% endif %}
+
+{% elif op_action == 'create_gang'%}
+<form action="/wap/?cmd={{ create_param }}" method="post">
+	{% csrf_token %}
+	<h4>======>宗门信息<======</h4>
+    <p>创建宗门需玩家等级达到50级，消耗宗门令牌x1，请决定后再创建。</p>
+    <p>请输入你的中文宗门名称，一旦选定无法更改，请仔细选取：</p>
+	<p>宗门名称：<input type="text" name="gang_name" placeholder="长度不能超过六个汉字" /></p>
+
+	<p>宗门宗旨：<input type="text" name="gang_zongzhi" /></p>
+	<p><input type="submit" value="创建宗门" onclick="return login();" /></p>
+</form>
+
+{% elif op_action == 'detail_gang' %}
+
+	<p>【宗门信息】</p>
+	<p>------------------</p>
+	<p>宗门名称：{{gang.name}}</p>
+	<p>帮会宗旨：{% if gang.description %} {{gang.description}} {% else %} 这个宗门很神秘，什么消息也没有。{% endif %}</p>
+	<p>帮会等级：{{gang.level}}级</p>
+	<p>帮主：<a href="/wap/?cmd={{player_encrypted_param}}">{{gang.leader}}</a></p>
+	<p>帮会人数：{{ gang.member_count }}/{{ gang.max_count }}</p>
+	<p>帮会资金：{{gang.money}}</p>
+	<p>帮会声望：{{gang.reputation}}</p>
+	<p>帮会成员：	{% for member in member_list %} {{ member|safe }} {% endfor %}</p>
+	<!-- <p>【帮会繁荣】：15000</p>
+	<p>【帮会科技】：强健(5级) 强攻(5级) 坚甲(5级)</p>
+	<p>【帮会福利】：双倍经验(未激活)</p> -->
+
+	{% if is_ongang or has_apply_gang %}
+	{% else %}
+	<p>{% if current_gang == gang.id %} {% else %} <a href="/wap/?cmd={{apply_gang_params}}">申请加入宗门</a> {% endif %} </p>
+	{% endif %}    
+    <p><a href="/wap/?cmd={{exit_gang_params}}">退出帮会</a></p>        
+
+
+{% elif op_action == 'record_apply_gang' %}
+	<p>【申请记录】</p>
+	{% if is_gangleader %}
+		{% if record_list %}
+			{% for record in record_list %}
+			<p>{{ forloop.counter }}. {{ record|safe }}</p>
+			{% endfor %}
+		{% else %}
+		<p>暂无申请记录</p>
+		{% endif %}
+	
+	{% else %}
+		{% if has_record %}
+		<p>申请加入的宗门：{{ get_apply_record.gang }}</p>
+		<p>审核状态：<span class="red">{{ get_apply_record.get_status_display }}</span></p>
+		<p>申请时间：{{ get_apply_record.applied_time|date:"Y年m月d日 H:i:s" }}</p>
+		<p><a href="/wap/?cmd={{revoke_apply_record}}">撤回申请</a></p>
+		{% else %}
+		<p>暂无申请记录</p>
+		{% endif %}
+	{% endif %}
+
+
+
+
+{% endif %}
+
+
+
+
+
+    </div>
+    <p><a href="#" onclick="goBack()">返回上页</a></p>
+    <a href="/wap/?cmd={{wap_encrypted_param}}">返回游戏</a>
+{% endblock %}

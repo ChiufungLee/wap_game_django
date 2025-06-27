@@ -402,10 +402,75 @@ class Player(models.Model):
    # 离线阈值（秒）
     SHORT_OFFLINE_THRESHOLD = 600  # 10分钟
     LONG_OFFLINE_THRESHOLD = 1800  # 30分钟
+    MAX_LEVEL = 5
 
     def __str__(self):
         return f"{self.name}"
     
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # 缓存当前等级的经验值
+        self.max_exp = self.calculate_max_exp(self.level)
+
+    def calculate_max_exp(self, level):
+        """计算指定等级所需的最大经验值（使用缓存优化）"""
+        # 公式: (level +1)*(level +1)*(level +11)+200
+        return (level + 10) ** 2 * (level + 25) + 200
+
+    def update_attributes(self):
+        """根据当前等级更新玩家属性"""
+        # 线性增长公式示例（可根据游戏平衡性调整）
+        self.max_hp = 100 + (self.level - 1) * 50
+        self.min_attack = 10 + (self.level - 1) * 5
+        self.max_attack = 20 + (self.level - 1) * 10
+        self.min_defense = 5 + (self.level - 1) * 3
+        self.max_defense = 10 + (self.level - 1) * 5
+        
+        # 升级时恢复满生命值
+        self.current_hp = self.max_hp
+        
+        # 更新最大经验缓存
+        self.max_exp = self.calculate_max_exp(self.level)
+
+    def gain_exp(self, exp):
+        """增加玩家经验并触发升级检查（性能优化版）"""
+        self.current_exp += exp
+        
+        # 预计算升级所需总经验（减少重复计算）
+        required_exp = self.max_exp - self.current_exp
+        
+        # 批量升级处理（避免多次保存）
+        while self.current_exp >= self.max_exp and self.level < self.MAX_LEVEL:
+            # 保存剩余经验
+            self.current_exp -= self.max_exp
+            
+            # 执行升级
+            self.level += 1
+            self.update_attributes()  # 更新属性
+            
+            # 计算下一级所需经验
+            required_exp = self.calculate_max_exp(self.level)
+        
+        # 设置最终最大经验值
+        self.max_exp = self.max_exp
+        
+        # 只保存一次数据库
+        self.save(update_fields=[
+            'level', 'current_exp', 'max_exp',
+            'current_hp', 'max_hp',
+            'min_attack', 'max_attack',
+            'min_defense', 'max_defense',
+            'last_active'
+        ])
+        
+        return self.level
+
+    def save(self, *args, **kwargs):
+        """重写save方法确保初始经验值正确"""
+        if not self.pk or self.max_exp == 0:
+            self.max_exp = self.calculate_max_exp(self.level)
+        super().save(*args, **kwargs)
+
     def get_bag_weight(self):
         """高效计算背包当前负重"""
         return self.inventory.aggregate(
@@ -852,6 +917,7 @@ class Gang(models.Model):
     reputation = models.PositiveIntegerField('帮派声望', default=0)
     money = models.PositiveIntegerField('帮派资金', default=0)
     level = models.PositiveIntegerField('帮派等级', default=1)
+    current_count = models.PositiveIntegerField(default=1, verbose_name="当前人数")  
     max_count = models.PositiveIntegerField(default=50, verbose_name="人数上限")  
     max_exp = models.PositiveIntegerField(default=10000, verbose_name="经验上限")  
     exp = models.PositiveIntegerField(default=0, verbose_name="当前经验")  
@@ -1474,12 +1540,14 @@ class NPCDropList(models.Model):
         super().save(*args, **kwargs)
         # 清除怪物掉落缓存
         cache.delete(f"npc_drop_info_{self.npc_id}")
+        cache.delete(f"npc:{self.npc_id}:info")
     
     def delete(self, *args, **kwargs):
         """删除时清除相关缓存"""
         npc_id = self.npc_id
         super().delete(*args, **kwargs)
         cache.delete(f"npc_drop_info_{npc_id}")
+        cache.delete(f"npc:{npc_id}:info")
 
 
 class GameMapNPCManager(models.Manager):
@@ -1629,7 +1697,8 @@ class Item(models.Model):
         verbose_name="游戏物品"
     
     def __str__(self):
-        return f"{self.get_category_display()}:{self.name}"
+        # return f"{self.get_category_display()}:{self.name}"
+        return f"{self.name}(ID:{self.id})"
 
     def is_equipment(self):
         """判断是否为装备"""
@@ -1713,7 +1782,7 @@ class GameMapItem(models.Model):
         verbose_name = '地图物品实例'
 
     def __str__(self):
-        return f"{self.item.name}" 
+        return f"{self.item.name}(m-{self.map_id})" 
 
     def save(self, *args, **kwargs):
         """保存时清除相关地图缓存"""
@@ -1727,7 +1796,9 @@ class GameMapItem(models.Model):
         
         # 清除新地图缓存
         if self.map_id:
-            # invalidate_map_cache(self.map_id)
+            from .utils.cache_utils import invalidate_map_cache
+            invalidate_map_cache(self.map_id)
+            
             keys = [
                 f"map_context_{self.map_id}",
                 f"adjacent_maps_{self.map_id}"
@@ -1840,7 +1911,7 @@ class PlayerItem(models.Model):
         return total_weight or 0
 
     @classmethod
-    def add_item(cls, player, item_id, count=1, **kwargs):
+    def add_item(cls, player, item_id, count=1, is_bound=False, **kwargs):
         """添加物品到背包（同步基础字段）"""
         from django.db import transaction
         
@@ -1859,6 +1930,7 @@ class PlayerItem(models.Model):
                         player=player,
                         item=item,
                         is_equipped=False,
+                        is_bound=is_bound,
                         # 确保堆叠物品属性一致
                         hp=item.hp,
                         attack=item.attack,
@@ -1889,6 +1961,7 @@ class PlayerItem(models.Model):
                     item=item,
                     count=count,
                     is_equipped=False,
+                    is_bound=is_bound,
                     # 同步基础属性
                     category=item.category,
                     equipment_post=item.equipment_post,
@@ -2248,4 +2321,212 @@ class GameBase(models.Model):
     def __str__(self):
         return f"{self.name} (v{self.version})"
 
+
+class Task(models.Model):
+    """优化后的任务模型"""
+    FUNCTIONAL_TYPE = (  # 功能类型
+        (1, '对话任务'),
+        (2, '杀怪任务'),
+        (3, '寻物任务'),
+    )
+    THEME_TYPE = (
+        (1, '主线任务'),
+        (2, '日常任务'),
+        (3, '副本任务'),
+    )
+    # 基础信息
+    name = models.CharField(verbose_name="任务名称", max_length=200, db_index=True)
+    description = models.TextField(verbose_name="任务描述", blank=True)
+    theme = models.PositiveSmallIntegerField(
+        choices=THEME_TYPE,
+        db_index=True,
+        verbose_name="任务主题"
+    )
+    function_type = models.PositiveSmallIntegerField(
+        choices=FUNCTIONAL_TYPE,
+        db_index=True,
+        verbose_name="任务类型"
+    )
+    
+    # 任务配置
+    is_droppable = models.BooleanField(verbose_name="可放弃", default=True)
+    trigger_conditions = models.JSONField(
+        verbose_name="触发条件", 
+        default=dict,
+        help_text="JSON格式的条件配置"
+    )
+
+    # 任务链关系
+    prev_task_id = models.PositiveIntegerField(  # 范围扩大
+        blank=True,
+        null=True,
+        verbose_name="前置任务ID",
+        db_index=True  # 增加索引
+    )
+    
+    # NPC关联
+    accept_npc = models.ForeignKey(
+        'GameNPC',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='available_tasks',
+        verbose_name="接取NPC"
+    )
+    
+    submit_npc = models.ForeignKey(
+        'GameNPC',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='submit_tasks',
+        verbose_name="提交NPC"
+    )
+    map = models.ForeignKey(
+        'GameMap',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        verbose_name="任务地图"
+    )
+    
+    # 对话内容
+    accept_dialog = models.TextField("接受对话", blank=True)
+    progress_dialog = models.TextField("进度对话", blank=True)
+    completion_dialog = models.TextField("完成对话", blank=True)
+    
+    # 奖励
+    rewards = models.JSONField(
+        verbose_name="任务奖励", 
+        default={
+            'money': 10,
+            'exp': 10,
+            # 'item': {
+            #     'item_id': 1,
+            #     'count': 1,
+            # }
+        },
+        help_text="JSON格式的奖励配置"
+    )
+    
+
+    class Meta:
+        verbose_name = "游戏任务"
+        verbose_name_plural = "任务"
+        indexes = [
+            models.Index(fields=['theme', 'function_type']),
+            models.Index(fields=['accept_npc', 'submit_npc']),
+        ]
+
+    def __str__(self):
+        return self.name
+
+
+class TaskItem(models.Model):
+    """任务目标表"""
+    TARGET_TYPE = (
+        (1, '对话'),
+        (2, '怪物'),
+        (3, '物品'),
+    )
+    task = models.ForeignKey('Task', on_delete=models.CASCADE, related_name='targets')
+    target_type = models.PositiveSmallIntegerField(null=True, blank=True, verbose_name="目标类型", choices=TARGET_TYPE)
+    target_id = models.PositiveIntegerField(null=True,blank=True, verbose_name="目标ID")  # 物品ID/怪物ID/NPC ID
+    amount = models.IntegerField(default=1, verbose_name="数量")
+    
+    class Meta:
+        verbose_name = "任务目标表"
+        verbose_name_plural = "任务目标表"
+
+    def __str__(self):
+        return self.task.name
+
+class PlayerTaskProcess(models.Model):
+    """玩家任务进度表"""
+    player_task = models.ForeignKey('PlayerTask', on_delete=models.CASCADE, related_name='progresses')
+    target_type = models.PositiveSmallIntegerField(null=True, blank=True, verbose_name="目标类型", choices=TaskItem.TARGET_TYPE)
+    target_id = models.PositiveIntegerField(null=True,blank=True, verbose_name="目标ID")
+    current_count = models.IntegerField(default=0, verbose_name="当前数量")  # 当前进度
+
+    # item_id = models.PositiveIntegerField(null=True, blank=True, verbose_name="收集物品")
+    # item_count = models.IntegerField(default=0, verbose_name="已有数量")
+    # monster_id = models.PositiveIntegerField(null=True, blank=True, verbose_name="击杀怪物")
+    # monster_count = models.IntegerField(default=0, verbose_name="击杀数量")
+    
+    class Meta:
+        verbose_name = "玩家任务进度表"
+        verbose_name_plural = "玩家任务进度表"
+
+class PlayerTask(models.Model):
+    """玩家任务状态表"""
+    # 任务状态选择
+    TASK_STATUS = (
+        (0, '未开始'),
+        (1, '进行中'),
+        (2, '已完成'),
+        (3, '已放弃'),
+        
+    )
+    
+    player = models.ForeignKey('Player', on_delete=models.CASCADE, related_name='player_tasks', verbose_name="玩家", db_index=True)
+    task = models.ForeignKey('Task', on_delete=models.CASCADE, related_name='player_tasks', verbose_name="任务", db_index=True)
+    status = models.PositiveSmallIntegerField( choices=TASK_STATUS, default=1, verbose_name="任务状态", db_index=True)
+    
+    # 任务时间
+    started_at = models.DateTimeField(auto_now_add=True, verbose_name="开始时间", db_index=True)
+    completed_at = models.DateTimeField(null=True, blank=True, verbose_name="完成时间", db_index=True)
+    
+    class Meta:
+        verbose_name = "玩家任务表"
  
+
+class SellGoods(models.Model):
+    SHOP_TYPES = (
+        (1, 'NPC商店'),
+        (2, '游戏商城'),
+        (3, '帮会商店'),
+    )
+    
+    CURRENCY_TYPES = (
+        (1, '铜币'),
+        (2, '金币'),
+        (3, '帮派资金'),
+    )
+    
+    shop_type = models.PositiveSmallIntegerField(
+        choices=SHOP_TYPES, 
+        db_index=True, 
+        verbose_name="商店类型",
+        default=1
+    )
+    npc = models.ForeignKey(
+        'GameNPC', 
+        on_delete=models.CASCADE, 
+        null=True, 
+        blank=True,
+        db_index=True,
+        verbose_name="关联NPC"
+    )
+    item = models.ForeignKey(
+        'Item', 
+        on_delete=models.CASCADE, 
+        db_index=True,
+        verbose_name="物品"
+    )
+    price = models.PositiveIntegerField(verbose_name="价格")
+    currency_type = models.PositiveSmallIntegerField(
+        choices=CURRENCY_TYPES, 
+        default=1,
+        verbose_name="货币类型"
+    )
+    
+    class Meta:
+        verbose_name = '游戏商店'
+        indexes = [
+            # 组合索引优化查询性能
+            models.Index(fields=['shop_type', 'npc']),
+            models.Index(fields=['shop_type', 'item']),
+        ]
+
+    def __str__(self):
+        return f"{self.item.name}({self.get_shop_type_display()})"

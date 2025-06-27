@@ -5,45 +5,83 @@
 {% block content %}
 
 <div id="content"></div>
-{% if op_action == 'attack_monster' %}
+{% if op_action == 'pre_attack' %}
+你向{{npc.name}}发起了攻击！
+<p></p>
+<!-- <p><a href="">状态</a> <a href="">装备</a> <a href="">逃跑({{run_cost}}铜币)</a></p> -->
+<p>你生命：{{player.current_hp}}/{{player.max_hp}} </p>
+<!-- <p>你攻击：{{player.min_attack}}-{{player.max_attack}}</p>
+<p>你防御：{{player.min_defense}}-{{player.max_defense}}</p> -->
+<p>你状态：中毒</p>
+<p>----------------------</p>
+<p>{{npc.name}}生命：{{ npc.hp }}/{{ npc.hp }}</p>
+<p>{{npc.name}}状态：虚弱</p>
+<P>----------------------</P>
 
-{% if attack_result %}
-    {% if attack_result.player_died %}
-        <div class="defeat">
-            <h3>💀 你被 {{ npc.name }} 击败了！ 💀</h3>
-            <p>你已被传送到安全区，并恢复了部分生命值。</p>
-            <p>当前生命值: {{ attack_result.player_current_hp }}/{{ player.max_hp }}</p>
-            
-            <div class="actions">
-            <a href="/wap/?cmd={{ wap_encrypted_param }}" class="btn">返回安全区</a>
-            </div>
-        </div>
+<p> {% for skill in player_skills %} <a href="/wap/?cmd={{skill.cmd_params}}">{{skill.name}}</a>{% endfor %} </p>
 
-    {% else %}
-        {% if attack_result.skill_used %}
-            <p>你使用了 {{ attack_result.skill_used }} 技能！</p>
-        {% else %}
-            <p>你发动了普通攻击！</p>
-        {% endif %}
 
-        <p>你对怪物造成了 <span class="damage">{{ attack_result.player_damage }}</span> 点伤害！</p>
-        <p>怪物对你造成了 <span class="damage">{{ attack_result.monster_damage }}</span> 点伤害！</p>
-    {% endif %}
+{% elif op_action == 'attack_monster' %}
+
+{% if attack_result.skill_used %}
+    <p>你使用了 {{ attack_result.skill_used }} 技能！</p>
+{% else %}
+    <p>你发动了普通攻击！</p>
 {% endif %}
-
-
-<p><a href="">查看</a> <a href="">逃跑(50铜币)</a></p>
+<p>你对[{{npc.name}}]造成了 <span class="damage">{{ attack_result.player_damage }}</span> 点伤害！</p>
+<p>[{{npc.name}}]对你造成了 <span class="damage">{{ attack_result.monster_damage }}</span> 点伤害！</p>
+<!-- <p> <a href="">逃跑(50铜币)</a></p> -->
 <p>你生命：{{player.current_hp}}/{{player.max_hp}} -{{ attack_result.monster_damage }}</p>
 <p>你攻击：{{player.min_attack}}-{{player.max_attack}}</p>
 <p>你防御：{{player.min_defense}}-{{player.max_defense}}</p>
 <p>你状态：中毒</p>
 <p>----------------------</p>
+<p>[{{npc.name}}]生命：{{ attack_result.remaining_hp }}/{{ npc.hp }}  -{{ attack_result.player_damage }}</p>
+<p>[{{npc.name}}]状态：虚弱</p>
+
     {% if attack_result.remaining_hp > 0 %}
-        <p>{{npc.name}}生命：{{ attack_result.remaining_hp }}/{{ npc.hp }}  -{{ attack_result.player_damage }}</p>
-        <p>{{npc.name}}状态：虚弱</p>
-        <p> {% for skill in player_skills %} <a href="/wap/?cmd={{skill.cmd_params}}">{{skill.name}}</a>{% endfor %} </p>
+        
+        
     {% else %}
-        {% if attack_result.killed %}
+
+    {% endif %}
+<p> {% for skill in player_skills %} <a href="/wap/?cmd={{skill.cmd_params}}">{{skill.name}}</a>{% endfor %} </p>
+    
+
+
+
+<!-- <p><a href="">攻击</a></p> -->
+{% elif op_action == 'attack_result' %}
+    {% if attack_result.killed %}
+
+    {% if task_progresses %}
+<div class="task-progress-section">
+    <!-- <h3>任务进度更新</h3> -->
+    {% for task in task_progresses %}
+    <div class="task-item">
+        <!-- <p>{{ task.task_name }}</p> -->
+        <ul>
+
+            <p>任务：{{ task.task_name }}
+                {% if task.progress.target_type == 2 %}
+                    击杀{{ task.progress.target_name }}: 
+                {% elif task.progress.target_type == 1 %}
+                    收集物品{{ task.progress.target_id }}: 
+                {% elif task.target_type == 3 %}
+                    与NPC #{{ task.progress.target_id }}对话: 
+                {% else %}
+                    未知目标 #{{ task.progress.target_id }}: 
+                {% endif %}
+                ({{ task.progress.current_count }}/{{ task.progress.required_count }})
+            </p>
+        </ul>
+    </div>
+    {% endfor %}
+</div>
+{% endif %}
+
+
+
         <div class="victory">
             <p>成功击杀了 {{ npc.name }}</p>
             
@@ -57,24 +95,36 @@
                        {{ item.name }} x{{ item.quantity }} 、
                     {% endfor %}
                     </p>
-                {% else %}
-                    <p>没有获得物品</p>
                 {% endif %}
             {% endif %}
-        {% else %}
-        <p> {% for skill in player_skills %} <a href="/wap/?cmd={{skill.cmd_params}}">{{skill.name}}</a>{% endfor %} </p>
-        
+
+
+
+
+
+    {% else %}
+        {% if attack_result.player_died %}
+            <div class="defeat">
+                <h3>💀 你被 {{ npc.name }} 击败了！ 💀</h3>
+                <p>你已被传送到安全区，并恢复了部分生命值。</p>
+                <p>当前生命值: {{ attack_result.player_current_hp }}/{{ player.max_hp }}</p>
+                
+                <div class="actions">
+                <a href="/wap/?cmd={{ wap_encrypted_param }}" class="btn">返回安全区</a>
+                </div>
+            </div>
         {% endif %}
-    {% endif %}
-<!-- <p><a href="">攻击</a></p> -->
+
     
+    {% endif %}
+   
 {% else %}
 {% endif %}
 
 
 </div>
 
-<a href="#" onclick="goBack()">返回上页</a><br>
+
 <a href="/wap/?cmd={{ wap_encrypted_param }}">返回游戏</a>
 
 

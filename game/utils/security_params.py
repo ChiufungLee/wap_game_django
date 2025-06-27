@@ -32,7 +32,7 @@ class ParamSecurity:
             return None
 
     @staticmethod
-    def generate_param(entity_type, sub_action, params=None, action=""):
+    def generate_param(entity_type, sub_action, params=None, one_time=False, action=""):
         """生成加密参数 - 使用统一有效期"""
         """
         生成加密参数 - 支持多参数和字典
@@ -80,6 +80,8 @@ class ParamSecurity:
             # 'value': value,
             'param_dict': param_dict,  # 存储原始字典
             'timestamp': timestamp,
+            'used': False,
+            'one_time': one_time  # 标记为一次性使用
         }, timeout=ParamSecurity.DEFAULT_MAX_AGE + 300)
         print(f"生成参数: entity_type={entity_type}, sub_action={sub_action}, "f"params={params}, action={action}")
         return f"{unique_id}-{signature}"
@@ -88,7 +90,7 @@ class ParamSecurity:
     def decode_param(encrypted_param, expected_action=None):
         """解密参数 - 使用统一有效期"""
         if not encrypted_param or not isinstance(encrypted_param, str):
-            return None
+            return {'error': 'invalid_format'}
             
         parts = encrypted_param.split('-', 1)
         if len(parts) != 2:
@@ -103,16 +105,32 @@ class ParamSecurity:
         
         if not data:
             print(f"缓存缺失: cache_key={cache_key}, param={encrypted_param}")
-            return None
+            return {'error': 'cache_missing'}
             
         # 验证时效性（30分钟）
         try:
             timestamp_val = int(data['timestamp'])
             if time.time() - timestamp_val > ParamSecurity.DEFAULT_MAX_AGE:
-                return None
+                return {'error': 'expired'}
         except (TypeError, ValueError):
-            return None
+            return {'error': 'invalid_timestamp'}
             
+
+        # 一次性参数处理
+        if data.get('one_time', False):
+            if data.get('used', False):
+                # 已使用的一次性参数 - 立即删除缓存
+                print(f"已使用的一次性参数 - 立即删除缓存")
+                cache.delete(cache_key)
+                return {'error': 'one_time_used'}
+            else:
+                # 标记为已使用并更新缓存
+                data['used'] = True
+                # 设置短过期时间（5分钟），确保及时清理
+                cache.set(cache_key, data, timeout=300)
+                return data
+            
+
         # 验证签名
         # check_data = f"{data['action']}:{data['value']}|{data['timestamp']}|{unique_id}"
         # expected_signature = hmac.new(
@@ -138,7 +156,7 @@ class ParamSecurity:
                 f"expected={expected_signature}, "
                 f"actual={signature}, "
                 f"data={check_data}")
-            return None
+            return {'error': 'invalid_signature'}
             
         # 验证操作类型（如果指定）
         if expected_action and data['action'] != expected_action:
@@ -148,12 +166,12 @@ class ParamSecurity:
         print(f"验证签名: check_data={check_data}, "
             f"expected_signature={expected_signature}, actual={signature}")
         # 返回完整的参数字典
-        return {
-            'entity_type': data['param_dict']['entity_type'],
-            'sub_action': data['param_dict']['sub_action'],
-            'params': data['param_dict']['params'],
-            'action': data['action']
-        }
+        # return {
+        #     'entity_type': data['param_dict']['entity_type'],
+        #     'sub_action': data['param_dict']['sub_action'],
+        #     'params': data['param_dict']['params'],
+        #     'action': data['action']
+        # }
         
         # 返回解密数据（不再标记已使用）
         return data
@@ -166,7 +184,7 @@ class ParamSecurity:
         data = ParamSecurity.decode_param(encrypted_param)
         if not data:
             return None
-        
+        print(f"续期参数啊啊啊啊啊啊啊啊啊啊啊{data}")
         # 提取参数组成部分
         # value_parts = data['value'].split(':')
         # if len(value_parts) != 3:
@@ -182,7 +200,7 @@ class ParamSecurity:
             # sub_action=value_parts[1],
             # entity_id=value_parts[2],
             # action=data.get('action', "")
-            entity_type=data['entity_type'],
+            # entity_type=data['entity_type'],
             sub_action=data['sub_action'],
             params=data['params'],
             action=data.get('action', "")

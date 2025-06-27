@@ -1,7 +1,5 @@
 {% extends 'base.html' %}
 
-{% block title %}错误{% endblock %}
-
 {% block css %}
 
 {% endblock %}
@@ -16,6 +14,6 @@
 </ul>
 {% endif %}
 
-<p><a href="/login/">返回首页</a></p>
+<p><a href="/wap/?cmd={{wap_encrypted_param}}">返回首页</a></p>
 
 {% endblock %}
