@@ -1043,18 +1043,23 @@ def get_equipped_items(player_id):
 
 def index(request):
     
+    # try:
+    #     secure_params = request.secure_params
+    #     # npc_id = request.secure_params.get('pk_get_into')
+    # except:
+    #     pass
     try:
-        secure_params = request.secure_params
-        # npc_id = request.secure_params.get('pk_get_into')
+        user_id = request.session.get("user_id")
+        user = request.session["username"]
+        user_admin = request.session.get("user_admin")
     except:
-        pass
+        ### 未登录
+        game = GameBase.objects.first()
+        messages.error(request, "登录信息已过期，请重新登录！")
+        return render(request, 'login.html', {"game":game})
     
-    user_id = request.session.get("user_id")
-    user = request.session["username"]
-    user_admin = request.session.get("user_admin")
+
     has_player = True
-
-
 
     
     if request.method == "GET":
@@ -1135,7 +1140,7 @@ def player_handler(request, params, sub_action):
                 # 创建新角色
                 if Player.objects.filter(name=player_name).exists():
                     messages.error(request, "该用户名已被注册，请更换用户名后重试！")
-                    return render(request, 'create_player.html', {'create_param': create_param})
+                    return render(request, 'page_player.html', {'create_param': create_param})
 
                 player = Player.objects.create(user_id=params, name=player_name,gender=gender,signature=signature, map=get_default_map())
                 request.session["player"] = player
@@ -1151,7 +1156,7 @@ def player_handler(request, params, sub_action):
                 return redirect(reverse('wap') + f'?cmd={ParamSecurity.generate_param("wap", "none", player.id, action="wap")}')
             else:
                 # 返回错误信息
-                return render(request, 'create_player.html', {
+                return render(request, 'page_player.html', {
                     'error': '角色名称不能为空',
                     'params': params,
                     'sub_action': sub_action,
@@ -1161,7 +1166,7 @@ def player_handler(request, params, sub_action):
         
         
         # 如果是GET请求，渲染创建角色页面
-        return render(request, 'create_player.html', {
+        return render(request, 'page_player.html', {
             'create_param': create_param,
             
             'op_action': 'create_player',
@@ -1191,7 +1196,7 @@ def player_handler(request, params, sub_action):
         equip_list = get_equipped_lists(player)
         
         print(equip_list)
-        return render(request, 'player_status.html', {
+        return render(request, 'page_player.html', {
             'player': player,
             'op_action': 'detail_player',
             'equip_list': equip_list,
@@ -1270,137 +1275,115 @@ def wap(request):
 
 
 
-    try:
-        # 获取玩家ID而非整个对象
-        player_id = request.session["player_id"]
-        # 从数据库重新获取玩家对象
-        player = Player.objects.get(id=player_id)
-        print(player.total_attributes())
-        
-        if player.is_online == False:
-            player.update_activity()
-    except (KeyError, Player.DoesNotExist):
-        messages.error(request, "你已长时间未操作，请重新登录！")
-        return redirect(reverse('game_error'))
-    
-    # print(player.total_attributes())
-    print(f"player map{player.map.id}")
-    new_map_id = params.get("map_id")
-    # # 记录旧地图ID
-    old_map_id = player.map.id
-    print(f"new_map_id{new_map_id}")
-    print(f"old_map_id{old_map_id}")
-    # # 验证新地图是否存在
-    if new_map_id:
-        # 确保地图ID有效
-        print(f"有新地图{old_map_id}")
-        try:
-            new_map = GameMap.objects.get(id=new_map_id)
-        except GameMap.DoesNotExist:
-            new_map_id = old_map_id  # 无效则保持原地
-    
-    # 仅当位置变化时才更新
-    if new_map_id and new_map_id != old_map_id:
-        player.map_id = new_map_id
-        # player.last_position_update = timezone.now()
-        player.save(update_fields=['map_id'])
-        print(f"位置变化了啊啊啊啊啊啊啊{old_map_id}")
-        # 清除相关缓存
-        invalidate_map_cache(old_map_id)  # 清除旧地图缓存
-        invalidate_map_cache(new_map_id)  # 清除新地图缓存
-        invalidate_player_cache(player.id)  # 清除玩家缓存
 
-    print("当前所在地图" + player.map.name)
-    print("当前所在地图" + str(player.map.id))
-    # request.session["player"] = player
-    # print("target_map:"+ str(new_map_id))
-    print(entity)
-    print(params)
-    # context['direction_links'] = generate_direction_links(
-    #     context['exits'], player.id
-    # )
-    print(f"player map{player.map.id if player.map else 'None'}")
-    print(f"获取缓存ID{player.map.id if player.map else 'None'}")
-    print(f"获取玩家啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊缓存ID{player.id if player.id else 'None'}")
-    context = get_map_context(player.map.id, player.id)
-    # get_map = get_map_context(player.map.id, player.id)  
- 
 
-    # context['action_links'] = generate_action_links(
-    #     map_id, player.id, context
-    # )
-    
-    # action_links = generate_action_links(
-    #     map_id, player.id, context
-    # )
-
-    # test_items = GameMapItem.objects.filter(
-    #     map_id=1,
-    #     expire_time__gt=timezone.now(),
-    #     picked_by__isnull=True
-    # ).select_related('item').only(
-    #     'id', 'item__id', 'item__name', 'count'
-    # )[:MAX_ITEMS_DISPLAY]
-    # print(test_items)
-
-    ### 获取地图对象
-    # exits = context['exits']
-    # print(f"exits:aaaaaaaaaaaaaaaaaaaaaaaaaaaaa{exits}")
-    npcs = context.get('npcs', [])
-    players = context.get('players', [])
-    monsters = context.get('monsters', [])
-    current_map = context.get('map')
-    items = context['items']
-    exits = generate_direction_links(
-        context['exits'], player.id
-    ) 
-    print(f"exits:bbbbbbbbbbbbbbbbbbbbbbbbbbbb{exits}")
-    for npc in npcs:
-        cmd_params = {
-            'npc_id': npc['id'],
-        }
-        npc['cmd_params'] = ParamSecurity.generate_param(
-            entity_type="gamenpc", 
-            sub_action="detail_gamenpc", 
-            params=cmd_params,
-            action="gamenpc"
-        )
-    for monster in monsters:
-        cmd_params = {
-            'npc_id': monster['id'],
-        }
-
-        # 保留原始参数，添加玩家ID
-        monster['cmd_params'] = ParamSecurity.generate_param(
-            entity_type="gamenpc", 
-            sub_action="detail_gamenpc", 
-            params=cmd_params,
-            action="gamenpc"
-        )
-    for player in players:
-        cmd_params = {
-            'player_id': player['id'],
-        }
-
-        # 保留原始参数，添加玩家ID
-        player['cmd_params'] = ParamSecurity.generate_param(
-            entity_type="player", 
-            sub_action="detail_player", 
-            params=cmd_params,
-            action="player"
-        )
-    print(npcs)
-
-    
-    print(npcs)
-    print("*****************************")
-
-    print(current_map)
 
 
 
     if entity == 'wap' and sub_action == 'none':
         # 处理无操作的情况
+
+        try:
+            # 获取玩家ID而非整个对象
+            player_id = request.session["player_id"]
+            # 从数据库重新获取玩家对象
+            player = Player.objects.get(id=player_id)
+            print(player.total_attributes())
+            
+            if player.is_online == False:
+                player.update_activity()
+        except (KeyError, Player.DoesNotExist):
+            messages.error(request, "你已长时间未操作，请重新登录！")
+            return redirect(reverse('game_error'))
+        
+        # print(player.total_attributes())
+        print(f"player map{player.map.id}")
+        new_map_id = params.get("map_id")
+        # # 记录旧地图ID
+        old_map_id = player.map.id
+        print(f"new_map_id{new_map_id}")
+        print(f"old_map_id{old_map_id}")
+        # # 验证新地图是否存在
+        if new_map_id:
+            # 确保地图ID有效
+            print(f"有新地图{old_map_id}")
+            try:
+                new_map = GameMap.objects.get(id=new_map_id)
+            except GameMap.DoesNotExist:
+                new_map_id = old_map_id  # 无效则保持原地
+        
+        # 仅当位置变化时才更新
+        if new_map_id and new_map_id != old_map_id:
+            player.map_id = new_map_id
+            # player.last_position_update = timezone.now()
+            player.save(update_fields=['map_id'])
+            print(f"位置变化了啊啊啊啊啊啊啊{old_map_id}")
+            # 清除相关缓存
+            # invalidate_map_cache(old_map_id)  # 清除旧地图缓存
+            # invalidate_map_cache(new_map_id)  # 清除新地图缓存
+            # invalidate_player_cache(player.id)  # 清除玩家缓存
+
+        print("当前所在地图" + player.map.name)
+        print("当前所在地图" + str(player.map.id))
+        # request.session["player"] = player
+        # print("target_map:"+ str(new_map_id))
+        print(entity)
+        print(params)
+        # context['direction_links'] = generate_direction_links(
+        #     context['exits'], player.id
+        # )
+        print(f"player map{player.map.id if player.map else 'None'}")
+        print(f"获取缓存ID{player.map.id if player.map else 'None'}")
+        print(f"获取玩家啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊缓存ID{player.id if player.id else 'None'}")
+        context = get_map_context(player.map.id, player.id)
+        # get_map = get_map_context(player.map.id, player.id)  
+    
+
+        npcs = context.get('npcs', [])
+        players = context.get('players', [])
+        monsters = context.get('monsters', [])
+        current_map = context.get('map')
+        items = context['items']
+        exits = generate_direction_links(
+            context['exits'], player.id
+        ) 
+        print(f"exits:bbbbbbbbbbbbbbbbbbbbbbbbbbbb{exits}")
+        for npc in npcs:
+            cmd_params = {
+                'npc_id': npc['id'],
+            }
+            npc['cmd_params'] = ParamSecurity.generate_param(
+                entity_type="gamenpc", 
+                sub_action="detail_gamenpc", 
+                params=cmd_params,
+                action="gamenpc"
+            )
+        for monster in monsters:
+            cmd_params = {
+                'npc_id': monster['id'],
+            }
+
+            # 保留原始参数，添加玩家ID
+            monster['cmd_params'] = ParamSecurity.generate_param(
+                entity_type="gamenpc", 
+                sub_action="detail_gamenpc", 
+                params=cmd_params,
+                action="gamenpc"
+            )
+        for player in players:
+            cmd_params = {
+                'player_id': player['id'],
+            }
+
+            # 保留原始参数，添加玩家ID
+            player['cmd_params'] = ParamSecurity.generate_param(
+                entity_type="player", 
+                sub_action="detail_player", 
+                params=cmd_params,
+                action="player"
+            )
+
+
 
         print(f"player_id is " + str(player_id))
         player = Player.objects.filter(id=player_id).first()
@@ -1546,7 +1529,10 @@ def handle_error(request, message=None):
 
 def shop_handler(request, params, sub_action):
     shop_type = params.get("shop_type",2)
-    player = request.session.get("player")
+
+    player_id = request.session.get("player_id")
+    player = Player.objects.get(id=player_id)
+
     if sub_action == "list_shop":
         goods = CacheManager.get_mall_goods(shop_type=2)
         # 格式化商品数据
@@ -1558,13 +1544,25 @@ def shop_handler(request, params, sub_action):
                 'item_name': item['item__name'],
                 'description': item['item__description'],
                 'price': item['price'],
-                'currency_type': item['currency_type']
+                'currency_type': item['currency_type'],
+                'item_link': ParamSecurity.generate_param(
+                    entity_type='item',
+                    sub_action='detail_item',
+                    params = {'item_id': item['item_id']},
+                    action='item'
+                ),
+                'create_param': ParamSecurity.generate_param(
+                    entity_type='shop',
+                    sub_action='buy_goods',
+                    params = {'shop_type': shop_type, 'sell_id': item['id'], "item_id": item['item_id']},
+                    action='shop'
+                ),
             })
         print(f"获取到的物品信息是：{formatted_goods}")
         return render(request, 'page_shop.html',{
                 'item': item,
                 'op_action': 'list_shop',
-                'shop_type': 2,
+                'shop_type': shop_type,
                 'formatted_goods': formatted_goods,
                 'wap_encrypted_param': ParamSecurity.generate_param(
                     entity_type='wap',
@@ -1572,8 +1570,47 @@ def shop_handler(request, params, sub_action):
                     params = {'player_id':player.id},
                     action='wap'
                 ),
-                'drop_encrypted_param': None,
+                # 'drop_encrypted_param': None,
             })
+    elif sub_action == "buy_goods":
+        item_id = params.get("item_id")
+        sell_id = params.get("sell_id")
+        shop_type = params.get("shop_type")
+        buy_bum = int(request.POST.get("buy_num"))
+        good = SellGoods.objects.only('price', 'item_id').get(id=sell_id)
+
+        print(f"购买物品是{good.item.name},价格是{good.price},购买数量{buy_bum}")
+        need_money = good.price * buy_bum
+        # print(f"good_price{good_price}")
+        if shop_type == 2:
+            ### 商城物品
+            params = ParamSecurity.generate_param("shop","list_shop", {"shop_type":shop_type}, action="shop")
+            print(f"玩家金钱={player.money}, 总价是{need_money}")
+
+            if int(player.money) < int(need_money):
+                messages.error(request, "金钱不足")
+                return redirect(reverse('wap')+f'?cmd={params}')
+
+            available_bag = player.bag_capacity - player.get_bag_weight()
+            if available_bag < buy_bum:
+                messages.error(request, "背包空间不足")
+                return redirect(reverse('wap')+f'?cmd={params}')
+
+            ## 获得物品
+            success, message = PlayerItem.add_item(player, item_id, count=buy_bum, is_bound=False,)
+            if success:
+                player.money -= need_money
+                player.save(update_fields=['money'])
+                request.session["player"] = player
+                messages.error(request, '购买成功')
+
+            else:
+                messages.error(request, message)
+            return redirect(reverse('wap')+f'?cmd={params}')
+    else:
+        pass
+
+
 
 def item_handler(request, params, sub_action):
     map_item_id = params.get("map_item_id")
@@ -1904,10 +1941,11 @@ def item_handler(request, params, sub_action):
 
 
 def skill_handler(request, params, sub_action):
+    player_id = request.session.get("player_id",[])
+    player = CacheManager.get_player_info(player_id)
 
-    player = request.session.get("player",[])
     if sub_action == "list_skill":
-        skills = PlayerSkill.objects.filter(player=player)
+        skills = PlayerSkill.objects.filter(player_id=player_id)
         skill_list = []
         for skill in skills:
             skill_encrypted_param = ParamSecurity.generate_param(
@@ -1916,33 +1954,39 @@ def skill_handler(request, params, sub_action):
                 params = {'skill_id':skill.skill.id},
                 action='skill'
             )
-            html_context = '<a href="/wap/?cmd={}">{}</a>'.format(skill_encrypted_param,skill.skill)
+            html_context = '<a href="/wap/?cmd={}">{}</a> ({})'.format(skill_encrypted_param, skill.skill, skill.rank_display)
             # print(html_context)
             skill_list.append(html_context)
         # print(skills)
-        return render(request, 'object_rank.html',{
+        return render(request, 'page_skill.html',{
             'skill_list':skill_list,
             'op_action': 'list_skill',
             'wap_encrypted_param': ParamSecurity.generate_param(
                 entity_type='wap',
                 sub_action='none',
-                params = {'player_id':player.id},
+                params = {'player_id':player_id},
                 action='wap'
             ),
         })
     elif sub_action == 'detail_skill':
         skill_id = params.get("skill_id")
         print("skill id" + str(skill_id))
-        skill = PlayerSkill.objects.filter(player=player,skill_id=skill_id).first()
+        skill = PlayerSkill.objects.filter(player_id=player_id,skill_id=skill_id).first()
         print(skill)
-        return render(request, 'gang_detail.html',{
+        return render(request, 'page_skill.html',{
             'skill':skill,
             'op_action': 'detail_skill',
             'wap_encrypted_param': ParamSecurity.generate_param(
                 entity_type='wap',
                 sub_action='none',
-                params = {'player_id':player.id},
+                params = {'player_id':player_id},
                 action='wap'
+            ),
+            'list_skill_params': ParamSecurity.generate_param(
+                entity_type='skill',
+                sub_action='list_skill',
+                params = {'player_id':player_id},
+                action='skill'
             ),
         })
 
@@ -2805,19 +2849,14 @@ def movemap_handler(request, params, sub_action):
 
 def team_handler(request, params, sub_action):
 
-    param_data = request.secure_params.get('cmd')
-    if not param_data:
-        return render_error(request, "参数错误")
-    entity = param_data['entity']
-    sub_action = param_data['sub_action']
-    params = param_data['params']
+    # param_data = request.secure_params.get('cmd')
+    # if not param_data:
+    #     return render_error(request, "参数错误")
+    # entity = param_data['entity']
+    # sub_action = param_data['sub_action']
+    # params = param_data['params']
 
-    create_param = ParamSecurity.generate_param(
-        entity_type='team',
-        sub_action='create_team',
-        params=params,
-        action='team'
-    )
+
     wap_encrypted_param = ParamSecurity.generate_param(
         entity_type="wap", 
         sub_action="none", 
@@ -2825,17 +2864,38 @@ def team_handler(request, params, sub_action):
         action="wap"
     )
     ## 判断是否已加入队伍
-    player = request.session["player"]
-    is_onteam = TeamMember.objects.filter(player=player).exists()
-
+    # player = request.session["player"]
+    player_id = request.session["player_id"]
+    player = CacheManager.get_player_info(player_id)
+    
+    print(f"player {player}")
+    create_param = ParamSecurity.generate_param(
+        entity_type='team',
+        sub_action='create_team',
+        params=params,
+        action='team'
+    )
 
     if sub_action == 'create_team':
 
+        if request.method == 'POST':
+            # team_name = request.POST.get("team_name")
+            team_name = player["name"] + '的队伍'
+            # print(f"team_name{team_name}")
+            if Team.objects.filter(name=team_name).exists():
+                messages.error(request, "该队伍名称已存在，请更换名称后重试！")
+                params = ParamSecurity.generate_param("team", "list_team", {}, action="team") 
+                return redirect(reverse('wap') + f'?cmd={params}')
 
-        
-        
+            team = Team.objects.create(leader_id=player_id, name=team_name)
+            TeamMember.objects.create(team=team, is_leader=True, player_id=player_id)  
+            messages.error(request, "你已成功创建队伍")
+            params = ParamSecurity.generate_param("team", "detail_team", {"team_id":team.id}, action="team") 
+            return redirect(reverse('wap') + f'?cmd={params}')
 
-        return render(request, 'create_player.html', {
+
+
+        return render(request, 'page_team.html', {
             'create_param': create_param,
             
             'op_action': 'create_team',
@@ -2850,55 +2910,13 @@ def team_handler(request, params, sub_action):
             ),
         })
 
-    elif sub_action == 'confirm_create_team':
-            # gang_name = request.POST.get('team_name').strip()
-            # gang_zongzhi = request.POST.get('gang_zongzhi').strip()
-            # if is_onteam:
-                # 创建新帮会
-            player_name = player.name
-            team_name = player_name + '的队伍'
-            if Team.objects.filter(name=team_name).exists():
-                messages.error(request, "该队伍名称已存在，请更换名称后重试！")
-
-                
-                
-                return render(request, 'create_player.html', {
-                    'create_param': create_param,
-                    "wap_encrypted_param": wap_encrypted_param,
-                    'op_action': 'create_team',
-                    
-                    })
-            else:
-                team = Team.objects.create(leader=player, name=team_name)
-                TeamMember.objects.create(team=team, is_leader=True, player=player)
-    
-
-                
-                
-                # 如果是GET请求，渲染创建角色页面
-                return render(request, 'gang_detail.html', {
-                    # 'create_param': create_param,
-                    
-                    "wap_encrypted_param": wap_encrypted_param,
-                    'team':team,
-                    'op_action': 'detail_team',
-                    'is_onteam': True,
-                    "breakteam_encrypted_param": ParamSecurity.generate_param(
-                        entity_type="team", 
-                        sub_action="break_team", 
-                        params=team.id, 
-                        action="team"
-                    )
-
-
-                })
     elif sub_action == 'list_team':
 
 
         try:
             # 假设你有TeamMember模型
             print("假设你有TeamMember模型")
-            team_member = TeamMember.objects.get(player_id=player.id)
+            team_member = TeamMember.objects.get(player_id=player_id)
             current_team = team_member.team.id
             # print("currteam" + str(current_team.id))
             is_onteam = True
@@ -2942,7 +2960,7 @@ def team_handler(request, params, sub_action):
 
         
         
-        return render(request, 'object_rank.html', {
+        return render(request, 'page_team.html', {
             'create_param': create_param,
             
             'op_action': 'list_team',
@@ -2961,10 +2979,10 @@ def team_handler(request, params, sub_action):
     elif sub_action == 'detail_team':
         team_id = params.get("team_id")
         team = Team.objects.get(id=team_id)
-        print(player)
+        # print(player)
         print(team.leader)
-        if team.leader == player:
-            print("=========")
+        # if team.leader == player:
+        #     print("=========")
 
         teamleader_encrypted_param = ParamSecurity.generate_param(
             entity_type="player", 
@@ -2973,7 +2991,7 @@ def team_handler(request, params, sub_action):
             action="player"
         )
 
-        is_onteam = TeamMember.objects.filter(team=team_id, player=player).exists()
+        is_onteam = TeamMember.objects.filter(team=team_id, player_id=player_id).exists()
         member_list = []
         if team.member_count > 1:
             get_member_list = team.get_all_members_info()
@@ -2991,7 +3009,7 @@ def team_handler(request, params, sub_action):
                     params={'player_id':member["id"],'team_id':team.id}, 
                     action="team"
                 )
-                if team.leader == player: 
+                if team.leader.id == player_id: 
                     context = '<a href="/wap/?cmd={}">{}</a> [在线] <a href="/wap/?cmd={}">踢出</a>'.format(
                         player_encrypted_param,
                         member['name'],
@@ -3010,7 +3028,7 @@ def team_handler(request, params, sub_action):
         print(is_onteam)
         
         
-        return render(request, 'gang_detail.html', {
+        return render(request, 'page_team.html', {
             # 'create_param': create_param,
             
             'op_action': 'detail_team',
@@ -3019,70 +3037,48 @@ def team_handler(request, params, sub_action):
             # 'gang_list': gang_list,
             'is_onteam': is_onteam,
             'team':team,
-            'player':player,
+            'player_id':player_id,
             "breakteam_encrypted_param": ParamSecurity.generate_param(
                 entity_type="team", 
                 sub_action="break_team", 
-                params={'team_id':team.id,'player_id':player.id}, 
+                params={'team_id':team.id,'player_id':player_id}, 
                 action="team"
             ),
             'member_list': member_list,
-            'teamleader_encrypted_param': teamleader_encrypted_param
+            'teamleader_encrypted_param': teamleader_encrypted_param,
+            "list_team_params": ParamSecurity.generate_param(
+                entity_type="team", 
+                sub_action="list_team", 
+                params={}, 
+                action="team"
+            ),
+
         })
     elif sub_action == 'break_team':
         team_id = params.get("team_id")
         player_id = params.get("player_id")
-        if player_id == player.id:
+        if player_id == player_id:
 
             team = Team.objects.get(id=team_id)
             # player = request
-            team.remove_member(player)
+            team.remove_member(player_id)
             messages.success(request,"退出队伍成功")
             is_onteam = False
 
-
-        get_team_list = Team.objects.all()[:10]
-        team_list = []
-        for team in get_team_list:
-            team_encrypted_param = ParamSecurity.generate_param(
-                entity_type="team", 
-                sub_action="detail_team", 
-                params=team.id, 
-                action="team"
-            )
-            jointeam_encrypted_param = ParamSecurity.generate_param(
-                entity_type="team", 
-                sub_action="join_team", 
-                params=team.id, 
-                action="team"
-            )
-            context = '<p><a href="/wap/?cmd={}">{}</a>（{}/{}） [<a href="/wap/?cmd={}">加入</a>]</p>'.format(
-                team_encrypted_param,
-                team.name,
-                team.member_count,
-                team.max_size,
-                jointeam_encrypted_param
-            )
-            team_list.append(context)
-
-
-        
-        
-        return redirect(reverse('wap') + f'?cmd={ParamSecurity.generate_param("team", "list_team", {}, action="team")}')
+        params = ParamSecurity.generate_param("team", "list_team", {}, action="team") 
+        return redirect(reverse('wap') + f'?cmd={params}')
 
 
     elif sub_action == 'join_team':
         team_id = params.get("team_id")
         
         team = Team.objects.get(id=team_id)
-        team.add_member(player)
+        team.add_member(player_id)
         # player = request
         # team.remove_member(player)
         messages.success(request,"加入队伍成功")
         is_onteam = True
         
-        
-
         return redirect(reverse('wap') + f'?cmd={ParamSecurity.generate_param("team", "list_team", {}, action="team")}')
 
     elif sub_action == 'remove_team':
@@ -3390,9 +3386,10 @@ def gang_handler(request, params, sub_action):
                 member["name"],
             )
             if member["name"] == player.name:
-                pass
+                has_joined_gang = True
             else:
                 member_list.append(context)
+                has_joined_gang = False
 
         # try:
         has_apply = GangApplication.objects.filter(gang_id=gang.id,player_id=player_id,status='pending').first()
@@ -3408,7 +3405,7 @@ def gang_handler(request, params, sub_action):
         
         return render(request, 'page_gang.html', {
             'create_param': create_param,
-            
+            'has_joined_gang': has_joined_gang,
             'op_action': 'detail_gang',
             "wap_encrypted_param": wap_encrypted_param,
             'has_apply_gang': has_apply_gang,
@@ -3610,6 +3607,15 @@ def gang_handler(request, params, sub_action):
         gang_id = params.get("gang_id")
 
         gangmember = GangMember.objects.get(gang_id=gang_id,player_id=player_id)
+
+        if gangmember.position == 'bz':
+            ### 需要清空成员后帮主才可退出帮会
+            # has_member = GangMember.objects.filter(gang_id=gang_id).first()
+            # if has_member:
+            messages.error(request,"帮主无法直接退出帮会，你可以直接解散帮会")
+            params = ParamSecurity.generate_param("gang","detail_gang", {"gang_id":gang_id}, action="gang")
+            return redirect(reverse('wap')+f'?cmd={params}')
+        
         gangmember.delete()
         
         banghui_message = '<a href="/wap/?cmd={}"> {} 退出了帮会~</a>'

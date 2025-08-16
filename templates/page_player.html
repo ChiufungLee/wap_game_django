@@ -1,0 +1,71 @@
+{% extends 'base.html' %}
+
+{% load static %}
+
+{% block content %}
+<div>
+{% if messages %}
+    {% for message in messages %}
+        <div class="message {% if message.tags %}{{ message.tags }}{% endif %}">
+            {{ message }}
+        </div>
+    {% endfor %}
+{% endif %}
+</div>
+
+{% if op_action == 'detail_player' %}
+
+    <p>名称：{{ player.name }} [{{ status }}]</p>
+    <p>性别：{{ player.get_gender_display }}</p>
+    <p>个性签名：{{ player.signature|default:"这家伙很高深，什么也没透露" }}</p>
+    <p>等级：{{ player.rank_title }}</p>
+    <p>经验：{{ player.current_exp }}/{{player.max_exp}}</p>
+    <p>生命：{{ player.current_hp }}/{{player.max_hp}}</p>
+    <p>攻击：{{ player.min_attack }}-{{player.max_attack}}</p>
+    <p>防御：{{ player.min_defense }}-{{player.max_defense}}</p>
+    <p>敏捷：{{ player.agility }}</p>
+    <p>灵魂力：{{ player.linghunli }}</p>
+    <p>斗气：{{ player.douqi }}</p>
+    <p>声望：{{ player.reputation }}</p>
+    <p>宗门：{% if player.gang %} <a href="/wap/?cmd={{gang_encrypted_param}}">{{ player.gang }}</a> {% else %} 未加入宗门 {% endif %}</p>
+
+        {% if equip_list %}
+
+            {% for equip in equip_list %}
+                <p>{{equip.position}}：<a href="/wap/?cmd={{equip.cmd_params}}">{{equip.item_name}}</a></p>
+
+            {% endfor %}
+        {% endif %}
+
+
+
+{% elif op_action == 'create_player' %}
+<form action="/wap/?cmd={{ create_param }}" method="post">
+	{% csrf_token %}
+	<h4>======>角色信息<======</h4>
+	<p>角色名称：<input type="text" name="player_name" /></p>
+
+    <p>角色性别：
+        <input type="radio" id="gender_M" name="gender" value="M" checked="checked" />
+        <label for="gender_M">男</label>
+        <input type="radio" id="gender_M" name="gender" value="F" />
+        <label for="gender_F">女</label>
+        <input type="radio" id="gender_M" name="gender" value="O" />
+        <label for="gender_O">保密</label>
+
+    </p>
+	<p>角色宣言：<input type="text" name="signature" /></p>
+	<p><input type="submit" value="创建角色" /></p>
+</form>
+<p><a href="/index/">返回首页</a></p>
+
+
+
+{% endif %}
+
+
+<a href="#" onclick="goBack()">返回上页</a><br>
+<a href="/wap/?cmd={{ wap_encrypted_param }}">返回游戏</a>
+
+
+{% endblock %}

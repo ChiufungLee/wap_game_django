@@ -182,8 +182,8 @@ class SecureParamMiddleware(MiddlewareMixin):
                             }
                             request.secure_data[key] = result
                             
-                            if key == 'cmd':
-                                self.renew_param_if_needed(request, value)
+                            # if key == 'cmd':
+                            #     self.renew_param_if_needed(request, value)
                         
                         # 处理解密失败的情况
                         elif isinstance(result, dict) and 'error' in result:

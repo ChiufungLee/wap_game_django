@@ -69,6 +69,8 @@
 {% elif op_action == 'detail_gang' %}
 
 	<p>【宗门信息】</p>
+    <!-- <p><a href="#">帮会仓库</a> | <a href="#">帮会任务</a></p>
+    <p><a href="#">帮会技能</a> | <a href="#">帮会管理</a></p> -->
 	<p>------------------</p>
 	<p>宗门名称：{{gang.name}}</p>
 	<p>帮会宗旨：{% if gang.description %} {{gang.description}} {% else %} 这个宗门很神秘，什么消息也没有。{% endif %}</p>
@@ -85,8 +87,9 @@
 	{% if is_ongang or has_apply_gang %}
 	{% else %}
 	<p>{% if current_gang == gang.id %} {% else %} <a href="/wap/?cmd={{apply_gang_params}}">申请加入宗门</a> {% endif %} </p>
-	{% endif %}    
-    <p><a href="/wap/?cmd={{exit_gang_params}}">退出帮会</a></p>        
+	<p><a href="/wap/?cmd={{exit_gang_params}}">退出帮会</a></p>
+    {% endif %}    
+            
 
 
 {% elif op_action == 'record_apply_gang' %}

@@ -1,0 +1,105 @@
+{% extends 'base.html' %}
+
+{% load static %}
+
+{% block script %}
+<script>
+
+function confirmExit() {
+
+if (confirm('确定要退出队伍吗？')) {
+
+	// 用户点击确认，跳转到退出队伍的链接
+
+	window.location.href = "/wap/?cmd={{breakteam_encrypted_param}}";
+
+	}
+}
+
+function confirmCreate(form) {
+    const message = `你确定要创建队伍吗？`;
+    if(confirm(message)) {
+        showLoading('创建中...');
+        return true;
+    }
+    return false;
+}
+
+</script>
+{% endblock %}
+
+{% block content %}
+<div>
+{% if messages %}
+    {% for message in messages %}
+        <div class="message {% if message.tags %}{{ message.tags }}{% endif %}">
+            {{ message }}
+        </div>
+    {% endfor %}
+{% endif %}
+</div>
+
+{% if op_action == 'list_team'%}
+<p>【队伍列表】</p>
+
+    {% if team_list %}
+        {% for team in team_list %}
+            <div class="chat-message">
+                <p>{{ forloop.counter }}. {{ team|safe }}</p>
+                <!-- <span class="timestamp">{{ chat.created_at|date:"H:i" }}</span> -->
+            </div>
+        {% endfor %}
+    {% else %}
+            <p>还没有队伍，快来创建第一个吧！</p>
+
+            <!-- <p><a href="/wap/?cmd={{create_param}}">创建队伍</a></p> -->
+
+            <form action="/wap/?cmd={{create_param}}" method="post" style="display: inline;"> 
+                {% csrf_token %}
+                <!-- <input type="text" name="buy_num" value="1" size="4" maxlength="9999" > -->
+                <input type="submit" value="创建队伍" />
+            </form>
+
+    {% endif %}
+
+    {% if is_onteam %}
+            <p><a href="/wap/?cmd={{myteam_encrypted_param}}">我的队伍</a></p>
+    {% else %}
+            <!-- <p><a href="/wap/?cmd={{create_param}}">创建队伍</a></p> -->
+            <form action="/wap/?cmd={{create_param}}" method="post" onsubmit="return confirmCreate(this);"> 
+                {% csrf_token %}
+                <!-- <input type="text" name="buy_num" value="1" size="4" maxlength="9999" > -->
+                <input type="submit" value="创建队伍" class="link_btn"/>
+            </form>
+    {% endif %}
+
+
+{% elif op_action == 'detail_team' %}
+
+	<p>【队伍信息】</p>
+	<p>队长：<a href="/wap/?cmd={{teamleader_encrypted_param}}">{{team.leader}}</a></p>
+
+	
+	{% for member in member_list %}
+	<p>队员：{{ member|safe }}</p>
+	{% endfor %}
+
+	<p>队伍人数：{{ team.member_count }}/{{team.max_size}}</p>
+	<p>属性加成：生命、攻击、防御额外增加0%。</p>
+	
+	<p>队伍说明：</p>
+	<p>1：普通队伍最多进5人。</p>
+	<p>2：队伍在线人数越多，攻防血加成越高。</p>
+
+
+	
+	{% if is_onteam %}<p><a href="javascript:void(0);" onclick="confirmExit()">退出队伍</a></p>{% else %} {% endif %}
+
+    <p><a href="/wap/?cmd={{list_team_params}}">返回队伍列表</a></p>
+
+{% endif %}
+
+<p><a href="/wap/?cmd={{ wap_encrypted_param }}">返回游戏</a></p>
+
+
+{% endblock %}

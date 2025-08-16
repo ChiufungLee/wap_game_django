@@ -8,6 +8,7 @@
     <!-- <link rel="stylesheet" type="text/css" href="/static/css/common.css"> -->
     <!-- <link rel="stylesheet" type="text/css" href="../static/login/css/register.css"> -->
     {% block css %}{% endblock %}
+    {% block script %}{% endblock %}
     <style>
         * {
             box-sizing: border-box;
@@ -42,6 +43,17 @@
             font-size: 16px;
             color: #555;
         }
+        .link_btn{
+            border: none;
+            padding: 0;
+            margin: 0;
+            font-size: 18px;
+            color: blue;
+            text-decoration: underline;
+        }
+        .link_btn:hover{
+            cursor: pointer;
+        }
     </style>
 </head>
 <body>
@@ -58,6 +70,7 @@
     {% endif %}
 </div>
 <!-- <button onclick="goBack()">返回上一页</button> -->
+
 
 
 

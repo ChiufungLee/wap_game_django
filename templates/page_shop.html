@@ -21,9 +21,16 @@
 
 {% if op_action == 'list_shop' %}
 {% if shop_type == 2 %}
-<P><span class="shop_width">序号</span><span class="shop_width">物品</span><span class="shop_width">价格</span><span class="shop_width">操作</span></P>
+<!-- <P><span class="shop_width">序号</span><span class="shop_width">物品</span><span class="shop_width">价格</span><span class="shop_width">操作</span></P> -->
+ <p>[商城信息]</p>
     {% for item in formatted_goods %}
-    <p>{{ forloop.counter}}、<a href="#">{{item.item_name}}</a> {{item.price}}金元 <input value="1"><a href="#">购买</a></p>
+    <div>{{ forloop.counter}}、<a href="/wap/?cmd={{item.item_link}}">{{item.item_name}}</a> {{item.price}}金元 
+		<form action="/wap/?cmd={{item.create_param}}" method="post" style="display: inline;"> 
+            {% csrf_token %}
+            <input type="text" name="buy_num" value="1" size="4" maxlength="9999" >
+			<input type="submit" value="购买" />
+		</form>
+	</div>
 
     {% endfor %}
 {% endif %}

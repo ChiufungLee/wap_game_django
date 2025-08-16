@@ -25,34 +25,6 @@
                     {{ forloop.counter }}. <a href="/wap/?cmd={{ task_data.cmd_params }}">{{ task_data.task.name }}</a>
 
                 </P>
-                <!-- <li class="task-item">
-                    <div class="task-title">{{ task_data.task.name }}</div>
-                    <div class="task-desc">{{ task_data.task.description }}</div>
-                    
-                    <ul class="task-targets">
-                        {% for progress in task_data.progresses %}
-                            <li class="target-item">
-                                {% if progress.target_type == 1 %}
-                                    收集物品: {{ progress.target_name }} 
-                                {% elif progress.target_type == 2 %}
-                                    击败怪物: {{ progress.target_name }} 
-                                {% elif progress.target_type == 3 %}
-                                    对话NPC: {{ progress.target_name }} 
-                                {% else %}
-                                    未知目标: {{ progress.target_name }}
-                                {% endif %}
-                                ({{ progress.current }}/{{ progress.required }})
-                            </li>
-                        {% endfor %}
-                    </ul>
-                    
-                    <div class="progress-container">
-                        <div class="progress-bar">
-                             <div class="progress-fill" style="width: {{ task_data.progress_percent }}%"></div> 
-                        </div>
-                        <div class="progress-text">{{ task_data.progress_percent }}%</div>
-                    </div>
-                </li> -->
             {% endfor %}
         </ul>
     {% else %}

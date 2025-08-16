@@ -2,7 +2,7 @@ import random
 from django.core.cache import cache
 from django.conf import settings
 from django.db.models import Q, F, Prefetch
-from ..models import GameNPC, Task, TaskItem, PlayerTask, Item, NPCDropList, SellGoods
+from ..models import GameNPC, Task, TaskItem, PlayerTask, Item, NPCDropList, SellGoods, Player
 
 class CacheManager:
     @staticmethod
@@ -379,3 +379,48 @@ class CacheManager:
             )
             cache.set(cache_key, goods, timeout=300)
         return goods
+
+    @staticmethod
+    def invalidate_shop_cache(shop_type):
+        """清除任务配置缓存"""
+        cache.delete(f"shop_{shop_type}_goods")
+
+
+    @staticmethod
+    def get_player_info(player_id):
+        """获取商城商品列表（带缓存）"""
+        cache_key = f'player_{player_id}_info'
+        player_info = cache.get(cache_key)
+
+        if player_info is None:
+            player = Player.objects.filter(id=player_id).only(
+                'name', 'level', 'current_exp', 'max_exp', 'current_hp', 'max_hp', 'linghunli', 
+                'min_attack', 'max_attack', 'min_defense', 'max_defense', 'agility',
+                'big_money', 'bag_capacity', 'money', 'reputation', 'douqi'
+            ).first()
+
+            bag_weight = player.get_bag_weight()
+
+            player_info = {
+                'name': player.name,
+                'level': player.level,
+                'current_exp': player.current_exp,
+                'max_exp': player.max_exp,
+                'current_hp': player.current_hp,
+                'max_hp': player.max_hp,
+                'linghunli': player.linghunli,
+                'min_attack': player.min_attack,
+                'max_attack': player.max_attack,
+                'min_defense': player.min_defense,
+                'max_defense': player.max_defense,
+                'agility': player.agility,
+                'big_money': player.big_money,
+                'bag_capacity': player.bag_capacity,
+                'money': player.money,
+                'reputation': player.reputation,
+                'douqi': player.douqi,
+                'bag_weight': bag_weight,   # 将背包重量加入缓存
+            }
+
+            cache.set(cache_key, player_info, timeout=300)
+        return player_info

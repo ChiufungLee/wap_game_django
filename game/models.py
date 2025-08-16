@@ -356,6 +356,7 @@ class Player(models.Model):
     agility = models.PositiveIntegerField('敏捷', default=10)
     linghunli = models.PositiveIntegerField('灵魂力', default=0)
     reputation = models.IntegerField('声望', default=0)
+    douqi = models.IntegerField('斗气', default=1000)
     user = models.ForeignKey(
         'User', 
         null=True, blank=True, 
@@ -385,7 +386,8 @@ class Player(models.Model):
     # 动态扩展字段
     params = models.JSONField('动态属性', default=dict, blank=True)
     bag_capacity = models.IntegerField(default=100, verbose_name="背包容量")
-    money = models.PositiveIntegerField('金钱', default=0)
+    money = models.PositiveIntegerField('货币', default=0)
+    big_money = models.PositiveIntegerField('金钱', default=0)
     # 元数据
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
 
@@ -425,7 +427,7 @@ class Player(models.Model):
         self.max_attack = 20 + (self.level - 1) * 10
         self.min_defense = 5 + (self.level - 1) * 3
         self.max_defense = 10 + (self.level - 1) * 5
-        
+        self.douqi = 500 + (self.level - 1) * 50
         # 升级时恢复满生命值
         self.current_hp = self.max_hp
         
@@ -1058,17 +1060,17 @@ class Team(models.Model):
         """检查是否可以加入队伍"""
         return self.member_count < self.max_size
     
-    def add_member(self, player):
+    def add_member(self, player_id):
         """添加成员到队伍"""
         if not self.can_join():
             raise ValidationError("队伍已满")
             
-        if TeamMember.objects.filter(player=player).exists():
+        if TeamMember.objects.filter(player_id=player_id).exists():
             raise ValidationError("玩家已在其他队伍中")
             
         with transaction.atomic():
             member = TeamMember.objects.create(
-                player=player,
+                player_id=player_id,
                 team=self,
                 is_leader=(self.member_count == 0)  # 第一个成员成为队长
             )
@@ -1092,10 +1094,10 @@ class Team(models.Model):
             # 添加其他需要的字段...
         } for member in members]
     
-    def remove_member(self, player):
+    def remove_member(self, player_id):
         """从队伍移除成员"""
-        member = self.members.filter(player=player).first()
-        logger.info(f"尝试从队伍 {self.id} 移除玩家 {player.id}")
+        member = self.members.filter(player_id=player_id).first()
+        logger.info(f"尝试从队伍 {self.id} 移除玩家 {player_id}")
         if not member:
             raise ValidationError("玩家不在此队伍中")
             
@@ -1506,12 +1508,12 @@ class GameNPC(models.Model):
         invalidate_npc_cache(self.id)
         
         # 清除相关地图缓存
-        if self.map_id:
-            self.invalidate_map_cache(self.map_id)
+        # if self.map_id:
+        #     self.invalidate_map_cache(self.map_id)
         
         # 如果位置变化，清除旧地图缓存
-        if old_map_id and old_map_id != self.map_id:
-            self.invalidate_map_cache(old_map_id)
+        # if old_map_id and old_map_id != self.map_id:
+        #     self.invalidate_map_cache(old_map_id)
 
 class NPCDropList(models.Model):
     npc = models.ForeignKey(
@@ -2530,3 +2532,9 @@ class SellGoods(models.Model):
 
     def __str__(self):
         return f"{self.item.name}({self.get_shop_type_display()})"
+
+    def save(self, *args, **kwargs):
+        """重写save方法，清除缓存"""
+        super().save(*args, **kwargs)
+        from .utils.cacheutils import CacheManager
+        CacheManager.invalidate_shop_cache(self.shop_type)

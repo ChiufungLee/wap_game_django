@@ -1,0 +1,52 @@
+{% extends 'base.html' %}
+
+{% load static %}
+
+{% block content %}
+<div>
+{% if messages %}
+    {% for message in messages %}
+        <div class="message {% if message.tags %}{{ message.tags }}{% endif %}">
+            {{ message }}
+        </div>
+    {% endfor %}
+{% endif %}
+</div>
+
+
+
+
+{% if op_action == 'list_skill' %}
+    <p>【已学会技能】</p>
+
+        {% if skill_list %}
+            {% for skill in skill_list %}
+                <div class="chat-message">
+                    <p>{{ forloop.counter }}. {{ skill|safe }}</a></p>
+                </div>
+            {% endfor %}
+        {% else %}
+                <p>还没有技能，快去学习一个吧！</p>
+        {% endif %}
+
+
+{% elif op_action == 'detail_skill' %}
+	<p>【技能详情】</p>
+
+		<p>名称：{{ skill.skill.name }}</p>
+		<p>等级：{{ skill.rank_display }}</p>
+		<p>经验：{{ skill.current_xp }}/{{skill.max_xp}}</p>
+		<p>攻击：{{ skill.attack }}</p>
+		<p>防御：{{ skill.defense }}</p>
+		<p>灵魂力：{{ skill.linghunli }}</p>
+		<p>斗气：{{ skill.douqi }}</p>
+
+
+        <p></p>
+        <p><a href="/wap/?cmd={{list_skill_params}}">返回技能列表</a></p>
+{% endif %}
+
+<p><a href="/wap/?cmd={{ wap_encrypted_param }}">返回游戏</a></p>
+
+
+{% endblock %}
